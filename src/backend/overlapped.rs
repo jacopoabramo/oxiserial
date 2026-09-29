@@ -12,7 +12,7 @@ use windows_sys::Win32::Devices::Communication::{
     CLRDTR, CLRRTS, COMMTIMEOUTS, COMSTAT, ClearCommBreak, ClearCommError, ESCAPE_COMM_FUNCTION,
     EV_RXCHAR, EscapeCommFunction, GetCommModemStatus, MODEM_STATUS_FLAGS, MS_CTS_ON, MS_DSR_ON,
     MS_RING_ON, MS_RLSD_ON, PURGE_RXABORT, PURGE_RXCLEAR, PURGE_TXABORT, PURGE_TXCLEAR, PurgeComm,
-    SETDTR, SETRTS, SetCommBreak, SetCommMask, SetCommTimeouts, WaitCommEvent,
+    SETDTR, SETRTS, SetCommBreak, SetCommMask, SetCommTimeouts, SetupComm, WaitCommEvent,
 };
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_OPERATION_ABORTED, GENERIC_READ,
@@ -250,6 +250,9 @@ impl Port {
         }
         // SAFETY: `handle` is a freshly opened port that nothing else owns.
         let file = unsafe { OwnedHandle::from_raw_handle(handle) };
+        // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): 4096-byte driver queues.
+        // SAFETY: `handle` is open and owned by `file`.
+        check(unsafe { SetupComm(handle, 4096, 4096) })?;
         // ReadFile returns at once with whatever is buffered; timeouts are kept by the caller.
         let timeouts = COMMTIMEOUTS {
             ReadIntervalTimeout: u32::MAX,
