@@ -156,7 +156,7 @@ class Serial(SerialBase):
         for a disconnected device are raised through the future.
         """
     def read_until(
-        self, expected: Buffer = b"\n", size: int | None = None
+        self, expected: Buffer | str | None = b"\n", size: int | None = None
     ) -> Future[bytes]:
         """Read until `expected` or `size` bytes.
 

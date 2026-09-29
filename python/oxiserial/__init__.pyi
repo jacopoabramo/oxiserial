@@ -369,10 +369,13 @@ class Serial(SerialBase):
         SerialException
             If the device is disconnected.
         """
-    def read_until(self, expected: Buffer = b"\n", size: int | None = None) -> bytes:
+    def read_until(
+        self, expected: Buffer | str | None = b"\n", size: int | None = None
+    ) -> bytes:
         """Read until `expected` arrives, `size` bytes are read or the read times out.
 
-        The result includes `expected`. `timeout` covers the whole call.
+        The result includes `expected`; `None` stands for a newline. `timeout`
+        covers the whole call.
 
         Raises
         ------
