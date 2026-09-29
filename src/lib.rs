@@ -2,6 +2,7 @@ mod aio;
 mod backend;
 mod errors;
 mod future;
+mod list_ports;
 mod port;
 mod runtime;
 mod serial;
@@ -85,6 +86,8 @@ fn _oxiserial(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     let tools_module = PyModule::new(py, "oxiserial.tools")?;
     let list_ports_module = PyModule::new(py, "oxiserial.tools.list_ports")?;
+    list_ports_module.add_class::<list_ports::ListPortInfo>()?;
+    list_ports_module.add_function(wrap_pyfunction!(list_ports::comports, &list_ports_module)?)?;
     add_submodule(&tools_module, "list_ports", &list_ports_module)?;
     add_submodule(m, "tools", &tools_module)?;
 
