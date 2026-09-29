@@ -3,6 +3,7 @@ mod errors;
 mod future;
 mod port;
 mod runtime;
+mod serial;
 mod settings;
 #[cfg(feature = "test-backend")]
 mod testing;
@@ -72,6 +73,9 @@ fn _oxiserial(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "PortNotOpenError",
         py.get_type::<errors::PortNotOpenError>(),
     )?;
+
+    m.add_class::<serial::SerialBase>()?;
+    m.add_class::<serial::Serial>()?;
 
     let aio_module = PyModule::new(py, "oxiserial.aio")?;
     aio_module.add_class::<future::OpFuture>()?;
