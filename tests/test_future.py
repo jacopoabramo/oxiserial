@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from conftest import Runner
+from oxiserial import SerialException
 
 pytest.importorskip("oxiserial._testing")
 from oxiserial import _testing  # noqa: E402
@@ -14,13 +15,17 @@ def test_wait_returns_the_value() -> None:
     assert future.wait() == b"x"
     assert future.done()
     assert future.result() == b"x"
+    assert _testing.delayed(b"y", 0).wait(timeout=1e30) == b"y"
 
 
 def test_await_and_wait_see_the_same_result(run: Runner) -> None:
     future = _testing.delayed(b"x", 0.05)
 
+    async def one() -> bytes:
+        return await future
+
     async def main() -> list[bytes]:
-        return list(await asyncio.gather(future, future))
+        return list(await asyncio.gather(one(), one()))
 
     assert run(main()) == [b"x", b"x"]
     assert future.wait() == b"x"
@@ -61,14 +66,23 @@ def test_cancelled_await_cancels_the_operation(run: Runner) -> None:
         future.result()
 
 
-def test_completion_after_the_loop_closed() -> None:
+def test_completion_after_the_loop_closed(capfd: pytest.CaptureFixture[str]) -> None:
     future = _testing.delayed(b"x", 0.1)
 
     async def waiter() -> bytes:
         return await future
 
     loop = asyncio.new_event_loop()
+    loop.set_exception_handler(lambda loop, context: None)
     loop.create_task(waiter())
     loop.run_until_complete(asyncio.sleep(0.01))
     loop.close()
     assert future.wait() == b"x"
+    assert "panicked" not in capfd.readouterr().err
+
+
+def test_panicking_operation_raises() -> None:
+    future = _testing.delayed(b"x", -1)
+    with pytest.raises(SerialException):
+        future.wait(timeout=5)
+    assert future.done()
