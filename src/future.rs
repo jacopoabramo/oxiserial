@@ -115,10 +115,13 @@ fn complete(shared: &Shared, resolution: Resolution) -> bool {
 }
 
 fn cancel_shared(shared: &Shared) -> bool {
-    if let Some(handle) = lock(&shared.state).abort.take() {
+    let handle = lock(&shared.state).abort.take();
+    let cancelled = complete(shared, Err(SerialError::Cancelled));
+    // Aborting first would let the task's drop guard store a panic result before this one.
+    if cancelled && let Some(handle) = handle {
         handle.abort();
     }
-    complete(shared, Err(SerialError::Cancelled))
+    cancelled
 }
 
 struct CompleteOnDrop(Arc<Shared>);
