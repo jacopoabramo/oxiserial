@@ -196,8 +196,9 @@ class SerialBase:
     def dtr(self) -> bool:
         """State of the DTR line.
 
-        While `dsrdtr` is on, flow control drives the line: an assigned level is
-        stored and applied when `dsrdtr` is turned off.
+        On Windows, while `dsrdtr` is on, flow control drives the line: an
+        assigned level is stored and applied when `dsrdtr` is turned off. Other
+        platforms have no DSR/DTR flow control and set the line at once.
         """
     @dtr.setter
     def dtr(self, value: bool) -> None: ...

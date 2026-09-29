@@ -201,7 +201,8 @@ impl PortCore {
         self.set_line(
             |state| {
                 state.dtr = level;
-                state.settings.dsrdtr
+                // POSIX has no DSR/DTR flow control, so there DTR stays the caller's to set.
+                state.settings.dsrdtr && cfg!(windows)
             },
             |port| port.set_dtr(level),
         )
@@ -609,20 +610,17 @@ mod tests {
             s.rtscts = true;
             s.dsrdtr = true;
         })?;
-        let lines = || mock::update(&a_name, |end| (end.line_writes, end.rts, end.dtr));
-        let before = lines();
+        let lines = || mock::update(&a_name, |end| (end.rts, end.dtr));
         a.set_rts(false)?;
         a.set_dtr(false)?;
         assert!(!a.rts() && !a.dtr());
-        assert_eq!(lines(), before);
+        // DTR is held back only on Windows; POSIX has no DSR/DTR flow control.
+        assert_eq!(lines(), Some((true, cfg!(windows))));
         a.update_settings(|s| {
             s.rtscts = false;
             s.dsrdtr = false;
         })?;
-        assert_eq!(
-            mock::update(&a_name, |end| (end.rts, end.dtr)),
-            Some((false, false))
-        );
+        assert_eq!(lines(), Some((false, false)));
         Ok(())
     }
 
