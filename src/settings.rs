@@ -51,7 +51,7 @@ impl StopBits {
             Ok(Self::Two)
         } else {
             Err(SerialError::Value(format!(
-                "Not a valid stop bit size: {value}"
+                "Not a valid stop bit size: {value:?}"
             )))
         }
     }
@@ -107,15 +107,16 @@ pub fn bytesize(value: i64) -> Result<u8, SerialError> {
 /// Validates a timeout in seconds; `None` means no timeout.
 pub fn seconds(value: Option<f64>) -> Result<Option<f64>, SerialError> {
     match value {
-        Some(v) if !(v.is_finite() && v >= 0.0) => {
-            Err(SerialError::Value(format!("Not a valid timeout: {v}")))
+        Some(v) if v.is_nan() || v < 0.0 => {
+            Err(SerialError::Value(format!("Not a valid timeout: {v:?}")))
         }
         _ => Ok(value),
     }
 }
 
+/// Converts timeout to Duration; values that overflow become None (no deadline).
 pub fn duration(value: Option<f64>) -> Option<Duration> {
-    value.map(Duration::from_secs_f64)
+    value.and_then(|s| Duration::try_from_secs_f64(s).ok())
 }
 
 #[cfg(test)]
@@ -143,5 +144,14 @@ mod tests {
         for size in 5..=8 {
             assert!(bytesize(size).is_ok());
         }
+    }
+
+    #[test]
+    fn huge_and_infinite_timeouts_mean_no_deadline() {
+        assert!(seconds(Some(f64::INFINITY)).is_ok());
+        assert!(seconds(Some(1e300)).is_ok());
+        assert_eq!(duration(Some(f64::INFINITY)), None);
+        assert_eq!(duration(Some(1e300)), None);
+        assert_eq!(duration(Some(1.5)), Some(Duration::from_millis(1500)));
     }
 }
