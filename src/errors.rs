@@ -24,15 +24,47 @@ pub enum SerialError {
     Forked,
 }
 
+// Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
+const DISCONNECTED: &str = "device reports readiness to read but returned no data \
+                            (device disconnected or multiple access on port?)";
+
+#[cfg(unix)]
+const GONE: [i32; 3] = [libc::EIO, libc::ENXIO, libc::ENODEV];
+
+// ERROR_OPERATION_ABORTED is left out: it is what cancelling our own operation reports.
+#[cfg(windows)]
+const GONE: [i32; 4] = {
+    use windows_sys::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_BAD_COMMAND, ERROR_DEVICE_REMOVED, ERROR_GEN_FAILURE,
+    };
+    [
+        ERROR_BAD_COMMAND as i32,
+        ERROR_DEVICE_REMOVED as i32,
+        ERROR_GEN_FAILURE as i32,
+        ERROR_ACCESS_DENIED as i32,
+    ]
+};
+
 impl SerialError {
     /// A read that reported readiness but returned no bytes.
     pub fn disconnected() -> Self {
-        // Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
         Self::Os {
             code: None,
-            message: "device reports readiness to read but returned no data \
-                      (device disconnected or multiple access on port?)"
-                .into(),
+            message: DISCONNECTED.into(),
+        }
+    }
+
+    /// Whether a read or write on an open port failed because the device is gone.
+    pub fn device_gone(&self) -> bool {
+        match self {
+            Self::Os {
+                code: Some(code), ..
+            } => GONE.contains(code),
+            Self::Os {
+                code: None,
+                message,
+            } => message == DISCONNECTED,
+            _ => false,
         }
     }
 
@@ -151,6 +183,22 @@ mod tests {
     fn io_errors_keep_their_code() {
         let err = SerialError::from(std::io::Error::from_raw_os_error(2));
         assert!(matches!(err, SerialError::Os { code: Some(2), .. }));
+    }
+
+    #[test]
+    fn device_gone_covers_removal_but_not_a_cancelled_operation() {
+        let os = |code| SerialError::from(std::io::Error::from_raw_os_error(code));
+        #[cfg(unix)]
+        let (gone, other) = (libc::ENODEV, libc::EAGAIN);
+        #[cfg(windows)]
+        let (gone, other) = (
+            windows_sys::Win32::Foundation::ERROR_DEVICE_REMOVED as i32,
+            windows_sys::Win32::Foundation::ERROR_OPERATION_ABORTED as i32,
+        );
+        assert!(os(gone).device_gone());
+        assert!(SerialError::disconnected().device_gone());
+        assert!(!os(other).device_gone());
+        assert!(!SerialError::NotOpen.device_gone());
     }
 
     #[cfg(unix)]

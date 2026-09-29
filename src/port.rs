@@ -420,6 +420,9 @@ impl PortCore {
     }
 
     /// Runs `op`, ending it with `NotOpen` if the port is closed before it finishes.
+    ///
+    /// When `op` fails because the device is gone, the port is closed, so later calls raise
+    /// `NotOpen` rather than failing on a handle that cannot recover.
     async fn until_closed<T>(
         &self,
         op: impl Future<Output = Result<T, SerialError>>,
@@ -432,7 +435,12 @@ impl PortCore {
             return Err(SerialError::NotOpen);
         }
         tokio::select! {
-            result = op => result,
+            result = op => {
+                if result.as_ref().is_err_and(SerialError::device_gone) {
+                    self.close();
+                }
+                result
+            }
             () = closed => Err(SerialError::NotOpen),
         }
     }
@@ -801,6 +809,26 @@ mod tests {
             b.close();
         });
         assert_eq!(read, Err(SerialError::NotOpen));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_removed_device_closes_the_port() -> Result<(), SerialError> {
+        let (a_name, b_name) = mock::pair();
+        let a = PortCore::new(Some(a_name.clone()), Settings::default());
+        let b = PortCore::new(Some(b_name.clone()), Settings::default());
+        a.open()?;
+        b.open()?;
+        mock::update(&a_name, |end| end.gone = true);
+        mock::update(&b_name, |end| end.gone = true);
+
+        assert!(matches!(a.read(1).await, Err(SerialError::Os { .. })));
+        assert!(!a.is_open());
+        assert_eq!(a.read(1).await, Err(SerialError::NotOpen));
+
+        assert!(matches!(b.write(b"x").await, Err(SerialError::Os { .. })));
+        assert!(!b.is_open());
+        assert_eq!(b.write(b"x").await, Err(SerialError::NotOpen));
         Ok(())
     }
 

@@ -101,7 +101,12 @@ class SerialBase:
         """Same as `port`."""
     @property
     def is_open(self) -> bool:
-        """Whether the port is open."""
+        """Whether the port is open.
+
+        A read or write that fails because the device is gone closes the port,
+        so this turns `False` and later calls raise
+        [`PortNotOpenError`][oxiserial.PortNotOpenError].
+        """
     @property
     def baudrate(self) -> int:
         """Line speed in baud."""
@@ -405,6 +410,8 @@ class Serial(SerialBase):
 
         For compatibility with
         [`io.TextIOWrapper`](https://docs.python.org/3/library/io.html#io.TextIOWrapper).
+        A read or write that fails because the device is gone closes the port,
+        so this turns `True`.
         """
     def readable(self) -> bool:
         """Return `True`.
