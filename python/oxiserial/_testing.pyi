@@ -1,3 +1,5 @@
+"""Test-only mock ports and helpers."""
+
 from oxiserial.aio import Future
 
 __all__ = ["mock_pair", "mock_block_writes", "mock_state", "delayed", "panic_in_task"]

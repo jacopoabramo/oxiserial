@@ -49,6 +49,7 @@ select = ["E", "F", "W", "I", "UP", "B", "PYI"]
 
 [tool.ruff.lint.per-file-ignores]
 "python/oxiserial/__init__.py" = ["F401"]
+"*.pyi" = ["PYI021"]
 
 [tool.mypy]
 strict = true
