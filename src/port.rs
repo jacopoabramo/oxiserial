@@ -810,6 +810,26 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn a_read_that_finds_the_device_gone_wakes_a_blocked_write() -> Result<(), SerialError> {
+        let (a, _b, a_name) = open_pair(|_| {})?;
+        mock::update(&a_name, |end| end.write_blocked = true);
+        let joined = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(a.write(b"x"), async {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                mock::update(&a_name, |end| end.gone = true);
+                a.read(1).await
+            })
+        })
+        .await;
+        let Ok((written, read)) = joined else {
+            return Err(SerialError::Timeout("the blocked write never woke".into()));
+        };
+        assert!(matches!(read, Err(SerialError::Os { .. })));
+        assert_eq!(written, Err(SerialError::NotOpen));
+        Ok(())
+    }
+
     #[tokio::test]
     async fn a_removed_device_closes_the_port() -> Result<(), SerialError> {
         let (a_name, b_name) = mock::pair();
