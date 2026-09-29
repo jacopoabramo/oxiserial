@@ -197,7 +197,8 @@ mod platform {
         rts: Option<bool>,
         dtr: Option<bool>,
     ) -> Result<(), SerialError> {
-        // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): errors ignored on open.
+        // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt), which ignores these on open;
+        // a pty has no lines, so they are ignored on every configure.
         match write_lines(stream, rts, dtr) {
             Err(SerialError::Os { code: Some(e), .. })
                 if e == libc::EINVAL || e == libc::ENOTTY =>
