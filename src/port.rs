@@ -56,6 +56,24 @@ fn ignore_unsupported(result: Result<(), SerialError>) -> Result<(), SerialError
     result
 }
 
+/// Writes the stored DTR and RTS levels, except for a line the flow control setting drives.
+///
+/// Backends may reset the lines when the port is opened or reconfigured.
+fn restore_lines(
+    port: &mut dyn Backend,
+    settings: &Settings,
+    rts: bool,
+    dtr: bool,
+) -> Result<(), SerialError> {
+    if !settings.dsrdtr {
+        ignore_unsupported(port.set_dtr(dtr))?;
+    }
+    if !settings.rtscts {
+        ignore_unsupported(port.set_rts(rts))?;
+    }
+    Ok(())
+}
+
 /// With an inter-byte timeout and data already received, the deadline moves to one gap from now.
 fn next_deadline(
     overall: Option<Instant>,
@@ -135,12 +153,7 @@ impl PortCore {
             return Err(SerialError::AlreadyOpen);
         }
         let mut opened = backend::open(&port, &settings)?;
-        if !settings.dsrdtr {
-            ignore_unsupported(opened.set_dtr(dtr))?;
-        }
-        if !settings.rtscts {
-            ignore_unsupported(opened.set_rts(rts))?;
-        }
+        restore_lines(opened.as_mut(), &settings, rts, dtr)?;
         opened.clear_buffers(true, false)?;
         *slot = Some(opened);
         Ok(())
@@ -161,8 +174,15 @@ impl PortCore {
     }
 
     pub fn set_settings(&self, settings: Settings) -> Result<(), SerialError> {
-        lock(&self.state).settings = settings.clone();
-        self.if_open(|port| port.configure(&settings))
+        let (rts, dtr) = {
+            let mut state = lock(&self.state);
+            state.settings = settings.clone();
+            (state.rts, state.dtr)
+        };
+        self.if_open(|port| {
+            port.configure(&settings)?;
+            restore_lines(port, &settings, rts, dtr)
+        })
     }
 
     pub fn set_rts(&self, level: bool) -> Result<(), SerialError> {
@@ -469,6 +489,22 @@ mod tests {
         a.open().unwrap();
         b.open().unwrap();
         (a, b, a_name)
+    }
+
+    #[test]
+    fn reconfiguring_an_open_port_keeps_the_line_levels() {
+        let (a, _b, a_name) = open_pair(|_| {});
+        a.set_rts(false).unwrap();
+        a.set_dtr(false).unwrap();
+        a.set_settings(Settings {
+            baudrate: 19_200,
+            ..a.settings()
+        })
+        .unwrap();
+        assert_eq!(
+            mock::update(&a_name, |end| (end.rts, end.dtr)),
+            Some((false, false))
+        );
     }
 
     #[tokio::test(start_paused = true)]

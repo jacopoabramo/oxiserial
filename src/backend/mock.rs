@@ -146,7 +146,12 @@ impl AsyncWrite for MockPort {
 
 impl Backend for MockPort {
     fn configure(&mut self, settings: &Settings) -> Result<(), SerialError> {
-        lock(&self.pair).ends[self.side].baudrate = settings.baudrate;
+        let mut state = lock(&self.pair);
+        let end = &mut state.ends[self.side];
+        end.baudrate = settings.baudrate;
+        // Reconfiguring resets the lines on some real backends; callers must restore them.
+        end.rts = true;
+        end.dtr = true;
         Ok(())
     }
 
