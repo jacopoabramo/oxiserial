@@ -9,7 +9,7 @@ from typing_extensions import Buffer
 
 from oxiserial import SerialBase
 
-__all__ = ["Future", "Serial"]
+__all__ = ["Future", "Serial", "serial_for_url"]
 
 _T_co = TypeVar("_T_co", covariant=True)
 
@@ -222,3 +222,19 @@ class Serial(SerialBase):
         """
     def __aexit__(self, *args: object) -> Future[None]:
         """Close the port."""
+
+def serial_for_url(
+    url: str | None, *args: Any, do_not_open: bool = False, **kwargs: Any
+) -> Serial:
+    """Create a [`Serial`][oxiserial.aio.Serial] for a device name or URL and open it.
+
+    Takes the arguments of [`oxiserial.serial_for_url`][oxiserial.serial_for_url],
+    including `loop://`.
+
+    Raises
+    ------
+    ValueError
+        If `url` has a scheme other than `loop://`, or a setting is not valid.
+    SerialException
+        If the device cannot be opened.
+    """

@@ -80,6 +80,23 @@ print(reply.wait(timeout=2))
 port.close()
 ```
 
+## Test without hardware
+
+`serial_for_url("loop://")` opens a port that reads back what is written to
+it. Other names open the device, as `Serial` does.
+
+```python
+from oxiserial import serial_for_url
+
+port = serial_for_url("loop://", baudrate=115200, timeout=0.01)
+port.write(b"ping--")
+print(port.read_until(expected=b"--"))  # b'ping--'
+port.close()
+```
+
+`oxiserial.aio.serial_for_url` does the same and returns an
+`oxiserial.aio.Serial`.
+
 ## Find a port
 
 ```python
@@ -94,8 +111,10 @@ for port in sorted(comports()):
 - `write()` also accepts `str` and sends it as UTF-8.
 - pyserial's deprecated camelCase methods (`inWaiting()`, `setRTS()`, ...)
   are not provided; use the properties (`in_waiting`, `rts`, ...).
-- `serial_for_url`, `serial.threaded` and `serial.rs485` are not available
-  yet.
+- `serial_for_url` accepts device names and `loop://`; other URLs, such as
+  `socket://`, raise `ValueError`. `Serial("loop://")` also opens a
+  loopback port.
+- `serial.threaded` and `serial.rs485` are not available yet.
 
 ## License
 

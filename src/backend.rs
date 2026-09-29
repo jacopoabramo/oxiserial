@@ -3,6 +3,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::errors::SerialError;
 use crate::settings::Settings;
 
+mod loopback;
 #[cfg(feature = "test-backend")]
 pub mod mock;
 pub mod native;
@@ -12,7 +13,6 @@ mod overlapped;
 /// What `PortCore::flush` waits on once the backend lock is released.
 pub enum Drain {
     /// Nothing is buffered by the backend.
-    #[cfg(feature = "test-backend")]
     Done,
     /// A duplicate of the port descriptor to run `tcdrain` on.
     #[cfg(unix)]
@@ -52,12 +52,19 @@ pub trait Backend: AsyncRead + AsyncWrite + Unpin + Send + 'static {
 }
 
 /// Opens `port` and applies `settings` and the RTS and DTR levels.
+///
+/// A name starting with `loop://` opens a new loopback port.
 pub fn open(
     port: &str,
     settings: &Settings,
     rts: bool,
     dtr: bool,
 ) -> Result<Box<dyn Backend>, SerialError> {
+    if loopback::is_loopback(port) {
+        let mut port = loopback::LoopbackPort::default();
+        port.configure(settings, rts, dtr)?;
+        return Ok(Box::new(port));
+    }
     #[cfg(feature = "test-backend")]
     if let Some(mut mock) = mock::lookup(port) {
         mock.configure(settings, rts, dtr)?;

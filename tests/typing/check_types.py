@@ -1,8 +1,9 @@
 from typing import assert_type
 
-from oxiserial import Serial
+from oxiserial import Serial, serial_for_url
 from oxiserial.aio import Future
 from oxiserial.aio import Serial as AioSerial
+from oxiserial.aio import serial_for_url as aio_serial_for_url
 
 
 def sync_api(port: Serial) -> None:
@@ -24,3 +25,9 @@ async def aio_api(port: AioSerial) -> None:
     assert_type(await port.write("x"), int)
     async with port as opened:
         assert_type(opened, AioSerial)
+
+
+def url_api() -> None:
+    """Type `serial_for_url` to return the Serial class of its module."""
+    assert_type(serial_for_url("loop://"), Serial)
+    assert_type(aio_serial_for_url("loop://"), AioSerial)
