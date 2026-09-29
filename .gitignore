@@ -75,3 +75,6 @@ docs/_build/
 .claude/settings.local.json
 .claude/plans
 .superpowers/
+.mypy_cache/
+*.pyd
+*.pdb

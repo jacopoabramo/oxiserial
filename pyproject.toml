@@ -4,10 +4,70 @@ build-backend = "maturin"
 
 [project]
 name = "oxiserial"
-requires-python = ">=3.8"
+description = "Serial port access for Python, implemented in Rust, with the pyserial API"
+readme = "README.md"
+requires-python = ">=3.11"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
-    "Programming Language :: Python :: Implementation :: PyPy",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Free Threading :: 2 - Beta",
+    "Typing :: Typed",
 ]
+license = "BSD-3-Clause"
+license-files = ["LICENSE", "LICENSES/*"]
 dynamic = ["version"]
+
+[project.optional-dependencies]
+rsloop = [
+    "rsloop>=0.1.53",
+]
+
+[tool.maturin]
+python-source = "python"
+module-name = "oxiserial._oxiserial"
+exclude = [
+    { path = "python/oxiserial/_testing.pyi", format = "wheel" },
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    "error::pytest.PytestUnraisableExceptionWarning",
+    "error::pytest.PytestUnhandledThreadExceptionWarning",
+]
+timeout = 60
+
+[tool.ruff]
+target-version = "py311"
+src = ["python", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "PYI", "PLC0415"]
+
+[tool.ruff.lint.per-file-ignores]
+"python/oxiserial/__init__.py" = ["F401"]
+"*.pyi" = ["PYI021"]
+
+[tool.mypy]
+strict = true
+files = ["python", "tests"]
+
+[dependency-groups]
+dev = [
+    "maturin>=1.15.0",
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+    "pytest-timeout>=2.4.0",
+    "rsloop>=0.1.53",
+    "ruff>=0.16.9",
+]
+rsloop = [
+    "rsloop>=0.1.53",
+]

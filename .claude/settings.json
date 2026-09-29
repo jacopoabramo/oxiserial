@@ -44,5 +44,15 @@
       "Read(./.env)",
       "Read(./.env.*)"
     ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          { "type": "command", "command": "uv run ruff format python tests && uv run ruff check --fix python tests" }
+        ]
+      }
+    ]
   }
 }

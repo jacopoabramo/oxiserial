@@ -1,0 +1,141 @@
+name: Run Tests
+
+on:
+  workflow_call:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, ${{ matrix.python }}${{ matrix.python == '3.14' && ', release' || '' }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.14", "3.14t"]
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+      UV_PYTHON_PREFERENCE: only-managed
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked
+      - name: Point PyO3 at the test interpreter
+        shell: bash
+        run: |
+          base="$(uv run python -c 'import sys; print(sys.base_prefix)')"
+          echo "PYO3_PYTHON=$(uv python find)" >> "$GITHUB_ENV"
+          echo "$base" >> "$GITHUB_PATH"
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets --features test-backend -- -D warnings
+      - name: cargo test
+        shell: bash
+        run: |
+          base="$(uv run python -c 'import sys; print(sys.base_prefix)')"
+          LD_LIBRARY_PATH="$base/lib" DYLD_LIBRARY_PATH="$base/lib" cargo test --features test-backend
+      - run: uv run maturin develop --uv --features test-backend ${{ matrix.python == '3.14' && '--release' || '' }}
+      - name: Virtual port pair (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y socat
+          # socat exits when a slave is closed, so restart it to keep both links alive between tests.
+          nohup sh -c 'while true; do socat pty,raw,echo=0,link=/tmp/ttyA pty,raw,echo=0,link=/tmp/ttyB; done' > socat.log 2>&1 &
+          for _ in $(seq 20); do
+            [ -e /tmp/ttyA ] && [ -e /tmp/ttyB ] && break
+            sleep 0.5
+          done
+          test -e /tmp/ttyA && test -e /tmp/ttyB
+          echo "OXISERIAL_PORT_A=/tmp/ttyA" >> "$GITHUB_ENV"
+          echo "OXISERIAL_PORT_B=/tmp/ttyB" >> "$GITHUB_ENV"
+      - name: Download com0com
+        id: com0com-download
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:RUNNER_TEMP "com0com"
+          Invoke-WebRequest -UserAgent "oxiserial-ci" -OutFile "$dir.zip" `
+            -Uri "https://sourceforge.net/projects/com0com/files/com0com/2.2.2.0/com0com-2.2.2.0-x64-fre-signed.zip/download"
+      - name: Extract com0com
+        id: com0com-extract
+        if: runner.os == 'Windows' && steps.com0com-download.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:RUNNER_TEMP "com0com"
+          Expand-Archive "$dir.zip" $dir
+          $setup = Get-ChildItem $dir -Recurse -Filter setup.exe | Select-Object -First 1
+          if (-not $setup) { throw "setup.exe not found in $dir" }
+          7z x -y "-o$dir\driver" $setup.FullName
+          if ($LASTEXITCODE -ne 0) { throw "7z failed with exit code $LASTEXITCODE" }
+          foreach ($f in "com0com.inf", "com0com.cat", "setupc.exe") {
+            if (-not (Test-Path "$dir\driver\$f")) { throw "$f missing from the extracted driver" }
+          }
+          "COM0COM_DIR=$dir\driver" >> $env:GITHUB_ENV
+      - name: Trust the com0com signer
+        id: com0com-trust
+        if: runner.os == 'Windows' && steps.com0com-extract.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # A silent driver install needs the publisher certificate trusted first; the driver catalog, not setup.exe, carries the signature.
+          $sig = Get-AuthenticodeSignature (Join-Path $env:COM0COM_DIR 'com0com.cat')
+          if ($sig.Status -ne 'Valid' -or -not $sig.SignerCertificate) { throw "com0com.cat signature is $($sig.Status)" }
+          $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("TrustedPublisher", "LocalMachine")
+          $store.Open("ReadWrite")
+          $store.Add($sig.SignerCertificate)
+          $store.Close()
+      - name: Create the port pair
+        id: com0com-pair
+        if: runner.os == 'Windows' && steps.com0com-trust.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          PORT_A: COM90
+          PORT_B: COM91
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # setupc.exe installs the driver from the .inf in its current directory.
+          Push-Location $env:COM0COM_DIR
+          try {
+            .\setupc.exe --silent install PortName=$env:PORT_A PortName=$env:PORT_B
+            if ($LASTEXITCODE -ne 0) { throw "setupc install failed with exit code $LASTEXITCODE" }
+          } finally {
+            Pop-Location
+          }
+      - name: Check the ports exist
+        id: com0com-check
+        if: runner.os == 'Windows' && steps.com0com-pair.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          PORT_A: COM90
+          PORT_B: COM91
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $names = [System.IO.Ports.SerialPort]::GetPortNames()
+          Write-Host "Ports: $($names -join ', ')"
+          foreach ($p in $env:PORT_A, $env:PORT_B) {
+            if ($names -notcontains $p) { throw "Port $p was not created" }
+          }
+      - name: Export the ports
+        id: com0com-export
+        if: runner.os == 'Windows' && steps.com0com-check.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          PORT_A: COM90
+          PORT_B: COM91
+        run: |
+          $ErrorActionPreference = 'Stop'
+          "OXISERIAL_PORT_A=$env:PORT_A" >> $env:GITHUB_ENV
+          "OXISERIAL_PORT_B=$env:PORT_B" >> $env:GITHUB_ENV
+      - run: uv run pytest -v
+      - run: uv run mypy
+      - run: uv run python -m mypy.stubtest oxiserial
+      - run: uv run ruff check python tests
+      - run: uv run ruff format --check python tests
