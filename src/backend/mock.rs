@@ -67,6 +67,9 @@ fn registry() -> &'static Registry {
     REGISTRY.get_or_init(Registry::default)
 }
 
+/// A baud rate `configure` refuses, standing in for a setting the device rejects.
+pub const REJECTED_BAUDRATE: u32 = 1;
+
 /// One end of an in-memory null-modem pair.
 pub struct MockPort {
     pair: Arc<Mutex<PairState>>,
@@ -164,6 +167,11 @@ impl AsyncWrite for MockPort {
 
 impl Backend for MockPort {
     fn configure(&mut self, settings: &Settings, rts: bool, dtr: bool) -> Result<(), SerialError> {
+        if settings.baudrate == REJECTED_BAUDRATE {
+            return Err(SerialError::Value(format!(
+                "Not a valid baudrate: {REJECTED_BAUDRATE}"
+            )));
+        }
         let mut state = lock(&self.pair);
         let end = &mut state.ends[self.side];
         end.baudrate = settings.baudrate;

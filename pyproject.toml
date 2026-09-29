@@ -38,7 +38,10 @@ package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-filterwarnings = ["error::pytest.PytestUnraisableExceptionWarning"]
+filterwarnings = [
+    "error::pytest.PytestUnraisableExceptionWarning",
+    "error::pytest.PytestUnhandledThreadExceptionWarning",
+]
 timeout = 60
 
 [tool.ruff]
