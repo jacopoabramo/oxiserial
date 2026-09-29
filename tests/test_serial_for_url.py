@@ -15,9 +15,9 @@ def test_loop_returns_written_bytes_and_times_out_empty() -> None:
     assert port.is_open
     assert port.write(b"abc--") == 5
     assert port.read_until(expected=b"--") == b"abc--"
-    start = time.monotonic()
+    start = time.perf_counter()
     assert port.read(1) == b""
-    assert 0.005 < time.monotonic() - start < 1
+    assert 0.005 < time.perf_counter() - start < 1
     port.close()
 
 
@@ -103,9 +103,9 @@ def test_aio_loop_round_trip_lines_and_close(run: Runner) -> None:
         assert port.is_open
         assert await port.write(b"abc--") == 5
         assert await port.read_until(expected=b"--") == b"abc--"
-        start = time.monotonic()
+        start = time.perf_counter()
         assert await port.read(1) == b""
-        assert 0.005 < time.monotonic() - start < 1
+        assert 0.005 < time.perf_counter() - start < 1
         port.dtr = False
         port.rts = False
         assert (port.dtr, port.rts, port.dsr, port.cts) == (False, False, False, False)
