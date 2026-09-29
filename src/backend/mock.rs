@@ -19,6 +19,7 @@ pub struct EndState {
     pub break_on: bool,
     pub write_blocked: bool,
     pub baudrate: u32,
+    pub configure_calls: usize,
     write_waker: Option<Waker>,
 }
 
@@ -30,6 +31,7 @@ impl Default for EndState {
             break_on: false,
             write_blocked: false,
             baudrate: 0,
+            configure_calls: 0,
             write_waker: None,
         }
     }
@@ -149,6 +151,7 @@ impl Backend for MockPort {
         let mut state = lock(&self.pair);
         let end = &mut state.ends[self.side];
         end.baudrate = settings.baudrate;
+        end.configure_calls += 1;
         // Reconfiguring resets the lines on some real backends; callers must restore them.
         end.rts = true;
         end.dtr = true;

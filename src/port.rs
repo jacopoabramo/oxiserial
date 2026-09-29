@@ -203,17 +203,19 @@ impl PortCore {
     /// so concurrent changes are not lost and the port always has the stored settings.
     pub fn update_settings(&self, change: impl FnOnce(&mut Settings)) -> Result<(), SerialError> {
         let mut slot = lock(&self.backend);
-        let (settings, rts, dtr) = {
+        let (settings, differs, rts, dtr) = {
             let mut state = lock(&self.state);
+            let before = state.settings.clone();
             change(&mut state.settings);
-            (state.settings.clone(), state.rts, state.dtr)
+            let differs = before.port_config_differs(&state.settings);
+            (state.settings.clone(), differs, state.rts, state.dtr)
         };
         match slot.as_mut() {
-            Some(port) => {
+            Some(port) if differs => {
                 port.configure(&settings)?;
                 restore_lines(port.as_mut(), &settings, rts, dtr)
             }
-            None => Ok(()),
+            _ => Ok(()),
         }
     }
 
@@ -591,6 +593,22 @@ mod tests {
             mock::update(&a_name, |end| (end.rts, end.dtr)),
             Some((false, false))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn only_port_settings_reconfigure_an_open_port() -> Result<(), SerialError> {
+        let (a, _b, a_name) = open_pair(|_| {})?;
+        let calls = || mock::update(&a_name, |end| end.configure_calls);
+        let opened = calls();
+        a.update_settings(|s| {
+            s.timeout = Some(1.0);
+            s.write_timeout = Some(1.0);
+            s.inter_byte_timeout = Some(0.1);
+        })?;
+        assert_eq!(calls(), opened);
+        a.update_settings(|s| s.baudrate = 19_200)?;
+        assert_eq!(calls(), opened.map(|n| n + 1));
         Ok(())
     }
 

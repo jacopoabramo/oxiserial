@@ -93,6 +93,20 @@ impl Default for Settings {
     }
 }
 
+impl Settings {
+    /// Whether the two differ in anything the open port is configured with, rather than timeouts or `exclusive`.
+    pub fn port_config_differs(&self, other: &Settings) -> bool {
+        let port_config = |s: &Settings| Settings {
+            timeout: None,
+            write_timeout: None,
+            inter_byte_timeout: None,
+            exclusive: None,
+            ..s.clone()
+        };
+        port_config(self) != port_config(other)
+    }
+}
+
 pub fn baudrate(value: i64) -> Result<u32, SerialError> {
     // Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
     u32::try_from(value).map_err(|_| SerialError::Value(format!("Not a valid baudrate: {value}")))
