@@ -304,28 +304,14 @@ def test_opening_a_missing_port_reports_the_errno() -> None:
     assert info.value.errno is not None
 
 
-def test_pyserial_aliases_and_repr(
+def test_read_all_portstr_and_repr(
     ports: tuple[Serial, Serial], mock_pair: tuple[str, str]
 ) -> None:
     a, b = ports
     a.write(b"xyz")
-    assert b.inWaiting() == 3
+    assert b.in_waiting == 3
     assert b.read_all() == b"xyz"
-    a.setRTS(0)
-    assert not b.getCTS()
-    a.setDTR(False)
-    assert not b.getDSR() and not b.getCD() and not b.getRI()
-    a.setBreak()
-    assert _testing.mock_state(mock_pair[0])["break"] is True
-    a.setBreak(0)
-    a.sendBreak(0.01)
-    assert _testing.mock_state(mock_pair[0])["break"] is False
-    a.writeTimeout = 2
-    a.interCharTimeout = 0.5
-    assert a.write_timeout == 2 and a.inter_byte_timeout == 0.5
-    b.flushInput()
-    b.flushOutput()
-    assert a.isOpen() and a.portstr == mock_pair[0]
+    assert a.portstr == mock_pair[0]
     assert repr(a) == (
         f"Serial<id=0x{id(a):x}, open=True>(port={mock_pair[0]!r}, baudrate=9600, "
         "bytesize=8, parity='N', stopbits=1, timeout=1.0, xonxoff=False, "

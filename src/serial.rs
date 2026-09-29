@@ -629,86 +629,6 @@ impl SerialBase {
             .call_method("format", (), Some(&fields))?
             .extract()
     }
-
-    #[pyo3(name = "inWaiting")]
-    fn in_waiting_alias(&self, py: Python<'_>) -> PyResult<usize> {
-        self.in_waiting(py)
-    }
-
-    #[pyo3(name = "flushInput")]
-    fn flush_input(&self, py: Python<'_>) -> PyResult<()> {
-        self.reset_input_buffer(py)
-    }
-
-    #[pyo3(name = "flushOutput")]
-    fn flush_output(&self, py: Python<'_>) -> PyResult<()> {
-        self.reset_output_buffer(py)
-    }
-
-    #[pyo3(name = "isOpen")]
-    fn is_open_alias(&self, py: Python<'_>) -> bool {
-        self.is_open(py)
-    }
-
-    #[pyo3(name = "setRTS", signature = (value = Truthy(true)), text_signature = "(self, /, value=1)")]
-    fn set_rts_alias(&self, py: Python<'_>, value: Truthy) -> PyResult<()> {
-        self.set_rts(py, value)
-    }
-
-    #[pyo3(name = "setDTR", signature = (value = Truthy(true)), text_signature = "(self, /, value=1)")]
-    fn set_dtr_alias(&self, py: Python<'_>, value: Truthy) -> PyResult<()> {
-        self.set_dtr(py, value)
-    }
-
-    #[pyo3(name = "setBreak", signature = (value = Truthy(true)), text_signature = "(self, /, value=1)")]
-    fn set_break_alias(&self, py: Python<'_>, value: Truthy) -> PyResult<()> {
-        self.set_break_condition(py, value)
-    }
-
-    #[pyo3(name = "getCTS")]
-    fn get_cts(&self, py: Python<'_>) -> PyResult<bool> {
-        self.cts(py)
-    }
-
-    #[pyo3(name = "getDSR")]
-    fn get_dsr(&self, py: Python<'_>) -> PyResult<bool> {
-        self.dsr(py)
-    }
-
-    #[pyo3(name = "getRI")]
-    fn get_ri(&self, py: Python<'_>) -> PyResult<bool> {
-        self.ri(py)
-    }
-
-    #[pyo3(name = "getCD")]
-    fn get_cd(&self, py: Python<'_>) -> PyResult<bool> {
-        self.cd(py)
-    }
-
-    #[pyo3(name = "setPort")]
-    fn set_port_alias(&self, py: Python<'_>, port: Option<String>) -> PyResult<()> {
-        self.set_port(py, port)
-    }
-
-    #[getter(writeTimeout)]
-    fn write_timeout_alias(&self) -> Option<f64> {
-        self.write_timeout()
-    }
-
-    #[setter(writeTimeout)]
-    fn set_write_timeout_alias(&self, py: Python<'_>, value: Option<f64>) -> PyResult<()> {
-        self.set_write_timeout(py, value)
-    }
-
-    #[getter(interCharTimeout)]
-    fn inter_char_timeout(&self) -> Option<f64> {
-        self.inter_byte_timeout()
-    }
-
-    #[setter(interCharTimeout)]
-    fn set_inter_char_timeout(&self, py: Python<'_>, value: Option<f64>) -> PyResult<()> {
-        self.set_inter_byte_timeout(py, value)
-    }
 }
 
 /// Serial port with pyserial's blocking API.
@@ -830,11 +750,6 @@ impl Serial {
 
     fn read_all<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
         slf.call_method1("read", (slf.getattr("in_waiting")?,))
-    }
-
-    #[pyo3(name = "sendBreak", signature = (duration = 0.25))]
-    fn send_break_alias<'py>(slf: &Bound<'py, Self>, duration: f64) -> PyResult<Bound<'py, PyAny>> {
-        slf.call_method1("send_break", (duration,))
     }
 
     fn __enter__<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, Self>> {

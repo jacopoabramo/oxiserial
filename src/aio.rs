@@ -116,11 +116,6 @@ impl AioSerial {
         slf.call_method1("read", (slf.getattr("in_waiting")?,))
     }
 
-    #[pyo3(name = "sendBreak", signature = (duration = 0.25))]
-    fn send_break_alias<'py>(slf: &Bound<'py, Self>, duration: f64) -> PyResult<Bound<'py, PyAny>> {
-        slf.call_method1("send_break", (duration,))
-    }
-
     fn __aenter__(slf: &Bound<'_, Self>) -> PyResult<OpFuture> {
         SerialBase::enter(slf.as_super())?;
         Ok(OpFuture::ready(Outcome::Object(Arc::new(

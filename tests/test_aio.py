@@ -122,7 +122,7 @@ def test_read_all_and_send_break_return_futures(mock_pair: tuple[str, str]) -> N
     b = Serial(mock_pair[1], timeout=1)
     a.write(b"abc").wait()
     assert b.read_all().wait() == b"abc"
-    assert a.sendBreak(0.01).wait() is None
+    assert a.send_break(0.01).wait() is None
     a.close()
     b.close()
 
