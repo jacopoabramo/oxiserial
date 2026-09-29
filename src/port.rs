@@ -174,13 +174,13 @@ impl PortCore {
     }
 
     pub fn set_settings(&self, settings: Settings) -> Result<(), SerialError> {
-        let (rts, dtr) = {
-            let mut state = lock(&self.state);
-            state.settings = settings.clone();
-            (state.rts, state.dtr)
-        };
+        lock(&self.state).settings = settings.clone();
         self.if_open(|port| {
             port.configure(&settings)?;
+            let (rts, dtr) = {
+                let state = lock(&self.state);
+                (state.rts, state.dtr)
+            };
             restore_lines(port, &settings, rts, dtr)
         })
     }

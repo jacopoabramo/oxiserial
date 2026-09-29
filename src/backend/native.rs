@@ -20,29 +20,6 @@ pub fn open(port: &str, settings: &Settings) -> Result<Box<dyn Backend>, SerialE
     Ok(Box::new(stream))
 }
 
-#[cfg(not(target_os = "macos"))]
-fn set_baud_rate(stream: &mut SerialStream, baudrate: u32) -> Result<(), SerialError> {
-    Ok(SerialPort::set_baud_rate(stream, baudrate)?)
-}
-
-/// serialport sets every rate through an ioctl that ptys reject; termios handles the standard ones.
-#[cfg(target_os = "macos")]
-fn set_baud_rate(stream: &mut SerialStream, baudrate: u32) -> Result<(), SerialError> {
-    use std::os::fd::{AsRawFd, BorrowedFd};
-
-    use nix::sys::termios::{BaudRate, SetArg, cfsetspeed, tcgetattr, tcsetattr};
-
-    if BaudRate::try_from(baudrate as libc::speed_t).is_err() {
-        return Ok(SerialPort::set_baud_rate(stream, baudrate)?);
-    }
-    // SAFETY: the descriptor belongs to `stream`, which outlives this call.
-    let fd = unsafe { BorrowedFd::borrow_raw(stream.as_raw_fd()) };
-    let mut termios = tcgetattr(fd).map_err(std::io::Error::from)?;
-    cfsetspeed(&mut termios, baudrate).map_err(std::io::Error::from)?;
-    tcsetattr(fd, SetArg::TCSANOW, &termios).map_err(std::io::Error::from)?;
-    Ok(())
-}
-
 impl Backend for SerialStream {
     fn configure(&mut self, settings: &Settings) -> Result<(), SerialError> {
         #[cfg(all(unix, not(target_os = "linux")))]
@@ -77,7 +54,7 @@ impl Backend for SerialStream {
             FlowControl::None
         })?;
         platform::apply(self, settings)?;
-        set_baud_rate(self, settings.baudrate)
+        Ok(self.set_baud_rate(settings.baudrate)?)
     }
 
     fn set_rts(&mut self, level: bool) -> Result<(), SerialError> {
@@ -146,6 +123,8 @@ impl Backend for SerialStream {
 mod platform {
     use std::os::fd::{AsRawFd, BorrowedFd};
 
+    #[cfg(target_os = "macos")]
+    use nix::sys::termios::{BaudRate, cfsetspeed};
     use nix::sys::termios::{InputFlags, SetArg, tcgetattr, tcsetattr};
     use tokio_serial::SerialStream;
 
@@ -163,8 +142,14 @@ mod platform {
         termios
             .input_flags
             .set(InputFlags::IXON | InputFlags::IXOFF, settings.xonxoff);
+        if !settings.xonxoff {
+            termios.input_flags.remove(InputFlags::IXANY);
+        }
         #[cfg(target_os = "linux")]
         mark_space(&mut termios.control_flags, settings.parity);
+        // IOSSIOSPEED leaves a speed that tcsetattr rejects; the real rate is set afterwards.
+        #[cfg(target_os = "macos")]
+        cfsetspeed(&mut termios, BaudRate::B9600).map_err(std::io::Error::from)?;
         tcsetattr(fd, SetArg::TCSANOW, &termios).map_err(std::io::Error::from)?;
         Ok(())
     }
