@@ -11,8 +11,9 @@ that can be waited on (`.wait()`) or awaited.
   `oxiserial._oxiserial`.
 - `python/oxiserial/`: `.pyi` stubs, `py.typed`, and an `__init__.py` that
   only re-exports `oxiserial._oxiserial`.
-- `.github/workflows/CI.yml`: test and wheel jobs. Started from
-  `maturin generate-ci github`, now maintained by hand.
+- `.github/workflows/`: `ci.yaml` calls `run-tests.yaml` and
+  `build-wheels.yaml`, then publishes. Started from `maturin generate-ci
+  github`, now maintained by hand.
 
 ## Rules
 

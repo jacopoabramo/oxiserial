@@ -1,0 +1,143 @@
+name: Run Tests
+
+on:
+  workflow_call:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.14", "3.14t"]
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+      UV_PYTHON_PREFERENCE: only-managed
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --locked
+      - name: Point PyO3 at the test interpreter
+        shell: bash
+        run: |
+          base="$(uv run python -c 'import sys; print(sys.base_prefix)')"
+          echo "PYO3_PYTHON=$(uv python find)" >> "$GITHUB_ENV"
+          echo "$base" >> "$GITHUB_PATH"
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets --features test-backend -- -D warnings
+      - name: cargo test
+        shell: bash
+        run: |
+          base="$(uv run python -c 'import sys; print(sys.base_prefix)')"
+          LD_LIBRARY_PATH="$base/lib" DYLD_LIBRARY_PATH="$base/lib" cargo test --features test-backend
+      - run: uv run maturin develop --uv --features test-backend
+      - name: Virtual port pair (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y socat
+          # socat exits when a slave is closed, so restart it to keep both links alive between tests.
+          nohup sh -c 'while true; do socat pty,raw,echo=0,link=/tmp/ttyA pty,raw,echo=0,link=/tmp/ttyB; done' > socat.log 2>&1 &
+          for _ in $(seq 20); do
+            [ -e /tmp/ttyA ] && [ -e /tmp/ttyB ] && break
+            sleep 0.5
+          done
+          test -e /tmp/ttyA && test -e /tmp/ttyB
+          echo "OXISERIAL_PORT_A=/tmp/ttyA" >> "$GITHUB_ENV"
+          echo "OXISERIAL_PORT_B=/tmp/ttyB" >> "$GITHUB_ENV"
+      - name: Download com0com
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:RUNNER_TEMP "com0com"
+          Invoke-WebRequest -UserAgent "oxiserial-ci" -OutFile "$dir.zip" `
+            -Uri "https://sourceforge.net/projects/com0com/files/com0com/2.2.2.0/com0com-2.2.2.0-x64-fre-signed.zip/download"
+      - name: Extract com0com
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:RUNNER_TEMP "com0com"
+          Expand-Archive "$dir.zip" $dir
+          $installer = Get-ChildItem $dir -Recurse -Filter *.exe | Select-Object -First 1
+          if (-not $installer) { throw "No installer .exe found in $dir" }
+          Write-Host "Installer: $($installer.FullName)"
+          "COM0COM_INSTALLER=$($installer.FullName)" >> $env:GITHUB_ENV
+      - name: Trust the com0com signer
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # A silent driver install needs the publisher certificate trusted first.
+          $cert = (Get-AuthenticodeSignature $env:COM0COM_INSTALLER).SignerCertificate
+          $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("TrustedPublisher", "LocalMachine")
+          $store.Open("ReadWrite")
+          $store.Add($cert)
+          $store.Close()
+      - name: Install com0com
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $proc = Start-Process $env:COM0COM_INSTALLER -ArgumentList "/S" -Wait -PassThru
+          Write-Host "Installer exit code: $($proc.ExitCode)"
+          if ($proc.ExitCode -ne 0) { throw "com0com installer failed with exit code $($proc.ExitCode)" }
+      - name: Create the port pair
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          PORT_A: COM90
+          PORT_B: COM91
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setupc = @("${env:ProgramFiles(x86)}\com0com\setupc.exe", "$env:ProgramFiles\com0com\setupc.exe") |
+            Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $setupc) { throw "setupc.exe not found under Program Files" }
+          Write-Host "setupc: $setupc"
+          # setupc.exe runs from its own directory to find its .inf files.
+          Push-Location (Split-Path $setupc)
+          try {
+            & $setupc install PortName=$env:PORT_A PortName=$env:PORT_B
+            if ($LASTEXITCODE -ne 0) { throw "setupc install failed with exit code $LASTEXITCODE" }
+          } finally {
+            Pop-Location
+          }
+      - name: Check the ports exist
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          PORT_A: COM90
+          PORT_B: COM91
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $names = [System.IO.Ports.SerialPort]::GetPortNames()
+          Write-Host "Ports: $($names -join ', ')"
+          foreach ($p in $env:PORT_A, $env:PORT_B) {
+            if ($names -notcontains $p) { throw "Port $p was not created" }
+          }
+      - name: Export the ports
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          PORT_A: COM90
+          PORT_B: COM91
+        run: |
+          $ErrorActionPreference = 'Stop'
+          "OXISERIAL_PORT_A=$env:PORT_A" >> $env:GITHUB_ENV
+          "OXISERIAL_PORT_B=$env:PORT_B" >> $env:GITHUB_ENV
+      - run: uv run pytest -v
+      - run: uv run mypy
+      - run: uv run python -m mypy.stubtest oxiserial
+      - run: uv run ruff check python tests
+      - run: uv run ruff format --check python tests
