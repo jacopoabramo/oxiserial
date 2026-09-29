@@ -36,7 +36,7 @@ def test_cancelled_read_leaves_later_data(
             with pytest.raises(TimeoutError):
                 await asyncio.wait_for(b.read(3), 0.05)
             await a.write(b"abc")
-            return await b.read(3)
+            return await asyncio.wait_for(b.read(3), 2)
 
     assert run(main()) == b"abc"
 

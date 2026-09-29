@@ -73,7 +73,7 @@ impl AioSerial {
         Ok(OpFuture::spawn(ops::read(Self::core(slf), size))?)
     }
 
-    #[pyo3(signature = (expected = LF, size = None), text_signature = "(self, /, expected=b'\n', size=None)")]
+    #[pyo3(signature = (expected = LF, size = None), text_signature = "(self, /, expected=b'\\n', size=None)")]
     fn read_until(
         slf: &Bound<'_, Self>,
         expected: &[u8],
