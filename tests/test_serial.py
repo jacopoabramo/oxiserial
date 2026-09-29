@@ -1,5 +1,6 @@
 import _thread
 import array
+import errno
 import io
 import sys
 import threading
@@ -329,6 +330,16 @@ def test_opening_a_missing_port_reports_the_errno() -> None:
     with pytest.raises(SerialException) as info:
         Serial("/dev/oxiserial-does-not-exist")
     assert info.value.errno is not None
+
+
+def test_opening_a_missing_port_reports_the_windows_error() -> None:
+    """Report the Windows error code and the matching errno for a missing port."""
+    if sys.platform != "win32":
+        pytest.skip("the Windows error code is Windows only")
+    with pytest.raises(SerialException) as info:
+        Serial("COM250")
+    assert info.value.winerror == 2
+    assert info.value.errno == errno.ENOENT
 
 
 def test_read_all_portstr_and_repr(

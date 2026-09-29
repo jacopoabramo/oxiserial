@@ -1,16 +1,18 @@
 use std::ffi::c_void;
 use std::io;
-use std::ops::{Deref, DerefMut};
-use std::os::windows::io::{AsRawHandle, FromRawHandle};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::pin::Pin;
 use std::ptr;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
-use serialport::{COMPort, SerialPort};
+use serialport::ClearBuffer;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use windows_sys::Win32::Devices::Communication::{
-    COMMTIMEOUTS, EV_RXCHAR, SetCommMask, SetCommTimeouts, WaitCommEvent,
+    CLRDTR, CLRRTS, COMMTIMEOUTS, COMSTAT, ClearCommBreak, ClearCommError, ESCAPE_COMM_FUNCTION,
+    EV_RXCHAR, EscapeCommFunction, GetCommModemStatus, MODEM_STATUS_FLAGS, MS_CTS_ON, MS_DSR_ON,
+    MS_RING_ON, MS_RLSD_ON, PURGE_RXABORT, PURGE_RXCLEAR, PURGE_TXABORT, PURGE_TXCLEAR, PurgeComm,
+    SETDTR, SETRTS, SetCommBreak, SetCommMask, SetCommTimeouts, WaitCommEvent,
 };
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_OPERATION_ABORTED, GENERIC_READ,
@@ -31,6 +33,11 @@ type WakerCell = Mutex<Option<Waker>>;
 
 fn last_error() -> io::Error {
     io::Error::last_os_error()
+}
+
+/// The error of a Win32 call that returned `ok`, with its Windows error code.
+fn check(ok: i32) -> io::Result<()> {
+    if ok == 0 { Err(last_error()) } else { Ok(()) }
 }
 
 fn is(err: &io::Error, code: u32) -> bool {
@@ -200,16 +207,16 @@ impl Drop for Op {
 
 /// A COM port opened for overlapped I/O, read only as far as the driver has buffered data.
 ///
-/// `COMPort` is used only for configuration and status calls; its blocking `Read` and
-/// `Write` must not be used on this handle.
+/// Status and control calls go to Win32 directly rather than through serialport, whose
+/// errors do not keep the Windows error code.
 pub struct Port {
-    // The operations are dropped before `com`, which closes the handle they run on.
+    // The operations are dropped before `file`, which closes the handle they run on.
     readiness: Op,
     read: Op,
     write: Op,
     // The pending write was handed to the driver by a non-blocking `write` that already returned.
     write_detached: bool,
-    com: COMPort,
+    file: OwnedHandle,
 }
 
 // SAFETY: the raw pointers and handles in `Op` are owned by the port and used only through
@@ -242,13 +249,13 @@ impl Port {
             return Err(last_error());
         }
         // SAFETY: `handle` is a freshly opened port that nothing else owns.
-        let com = unsafe { COMPort::from_raw_handle(handle) };
+        let file = unsafe { OwnedHandle::from_raw_handle(handle) };
         // ReadFile returns at once with whatever is buffered; timeouts are kept by the caller.
         let timeouts = COMMTIMEOUTS {
             ReadIntervalTimeout: u32::MAX,
             ..COMMTIMEOUTS::default()
         };
-        // SAFETY: `handle` is open and owned by `com`.
+        // SAFETY: `handle` is open and owned by `file`.
         if unsafe { SetCommTimeouts(handle, &timeouts) } == 0 {
             return Err(last_error());
         }
@@ -261,12 +268,86 @@ impl Port {
             read: Op::new(handle)?,
             write: Op::new(handle)?,
             write_detached: false,
-            com,
+            file,
         })
     }
 
     fn handle(&self) -> HANDLE {
-        self.com.as_raw_handle()
+        self.file.as_raw_handle()
+    }
+
+    fn escape(&self, function: ESCAPE_COMM_FUNCTION) -> io::Result<()> {
+        // SAFETY: the handle is open for as long as `self` lives.
+        check(unsafe { EscapeCommFunction(self.handle(), function) })
+    }
+
+    fn modem_line(&self, line: MODEM_STATUS_FLAGS) -> io::Result<bool> {
+        let mut status = 0;
+        // SAFETY: as above; `status` outlives the call.
+        check(unsafe { GetCommModemStatus(self.handle(), &mut status) })?;
+        Ok(status & line != 0)
+    }
+
+    fn comm_status(&self) -> io::Result<COMSTAT> {
+        let mut errors = 0;
+        let mut status = COMSTAT::default();
+        // SAFETY: as above; `errors` and `status` outlive the call.
+        check(unsafe { ClearCommError(self.handle(), &mut errors, &mut status) })?;
+        Ok(status)
+    }
+
+    // The methods below are named after serialport's `SerialPort` methods, so the backend code
+    // is shared with the POSIX port.
+    pub fn write_request_to_send(&mut self, level: bool) -> io::Result<()> {
+        self.escape(if level { SETRTS } else { CLRRTS })
+    }
+
+    pub fn write_data_terminal_ready(&mut self, level: bool) -> io::Result<()> {
+        self.escape(if level { SETDTR } else { CLRDTR })
+    }
+
+    pub fn read_clear_to_send(&mut self) -> io::Result<bool> {
+        self.modem_line(MS_CTS_ON)
+    }
+
+    pub fn read_data_set_ready(&mut self) -> io::Result<bool> {
+        self.modem_line(MS_DSR_ON)
+    }
+
+    pub fn read_ring_indicator(&mut self) -> io::Result<bool> {
+        self.modem_line(MS_RING_ON)
+    }
+
+    pub fn read_carrier_detect(&mut self) -> io::Result<bool> {
+        self.modem_line(MS_RLSD_ON)
+    }
+
+    pub fn bytes_to_read(&self) -> io::Result<u32> {
+        Ok(self.comm_status()?.cbInQue)
+    }
+
+    pub fn bytes_to_write(&self) -> io::Result<u32> {
+        Ok(self.comm_status()?.cbOutQue)
+    }
+
+    pub fn clear(&self, which: ClearBuffer) -> io::Result<()> {
+        let flags = match which {
+            ClearBuffer::Input => PURGE_RXABORT | PURGE_RXCLEAR,
+            ClearBuffer::Output => PURGE_TXABORT | PURGE_TXCLEAR,
+            ClearBuffer::All => PURGE_RXABORT | PURGE_RXCLEAR | PURGE_TXABORT | PURGE_TXCLEAR,
+        };
+        // SAFETY: as above.
+        check(unsafe { PurgeComm(self.handle(), flags) })
+    }
+
+    pub fn set_break(&self) -> io::Result<()> {
+        // SAFETY: as above.
+        check(unsafe { SetCommBreak(self.handle()) })
+    }
+
+    pub fn clear_break(&self) -> io::Result<()> {
+        // SAFETY: as above.
+        check(unsafe { ClearCommBreak(self.handle()) })
     }
 
     /// Reads up to `len` bytes that the driver already holds.
@@ -342,17 +423,9 @@ impl Port {
     }
 }
 
-impl Deref for Port {
-    type Target = COMPort;
-
-    fn deref(&self) -> &COMPort {
-        &self.com
-    }
-}
-
-impl DerefMut for Port {
-    fn deref_mut(&mut self) -> &mut COMPort {
-        &mut self.com
+impl AsRawHandle for Port {
+    fn as_raw_handle(&self) -> RawHandle {
+        self.handle()
     }
 }
 
@@ -367,7 +440,7 @@ impl AsyncRead for Port {
             return Poll::Ready(Ok(()));
         }
         loop {
-            let queued = this.com.bytes_to_read().map_err(io::Error::from)? as usize;
+            let queued = this.bytes_to_read()? as usize;
             if queued > 0 {
                 // Never more than the driver holds, so in_waiting and PurgeComm see every unread byte.
                 let data = this.read_buffered(queued.min(buf.remaining()))?;

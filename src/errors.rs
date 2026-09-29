@@ -10,7 +10,11 @@ create_exception!(oxiserial, PortNotOpenError, SerialException);
 /// Failure of a port operation, convertible to the matching Python exception.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SerialError {
-    Os { errno: Option<i32>, message: String },
+    /// `code` is the OS error code: errno on POSIX, the Windows error code on Windows.
+    Os {
+        code: Option<i32>,
+        message: String,
+    },
     Timeout(String),
     NotOpen,
     AlreadyOpen,
@@ -25,26 +29,26 @@ impl SerialError {
     pub fn disconnected() -> Self {
         // Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
         Self::Os {
-            errno: None,
+            code: None,
             message: "device reports readiness to read but returned no data \
                       (device disconnected or multiple access on port?)"
                 .into(),
         }
     }
 
-    /// Wraps a failure to open `port` in pyserial's message, keeping its errno.
+    /// Wraps a failure to open `port` in pyserial's message, keeping its error code.
     pub fn open_failed(port: &str, err: SerialError) -> Self {
-        let errno = match &err {
-            Self::Os { errno, .. } => *errno,
+        let code = match &err {
+            Self::Os { code, .. } => *code,
             _ => None,
         };
         // Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt), which quotes the name only on Windows.
-        let message = match errno {
+        let message = match code {
             _ if cfg!(windows) => format!("could not open port '{port}': {err}"),
             Some(errno) => format!("could not open port {port}: [Errno {errno}] {err}"),
             None => format!("could not open port {port}: {err}"),
         };
-        Self::Os { errno, message }
+        Self::Os { code, message }
     }
 }
 
@@ -71,7 +75,7 @@ impl std::error::Error for SerialError {}
 impl From<std::io::Error> for SerialError {
     fn from(err: std::io::Error) -> Self {
         Self::Os {
-            errno: err.raw_os_error(),
+            code: err.raw_os_error(),
             message: err.to_string(),
         }
     }
@@ -100,7 +104,7 @@ impl From<serialport::Error> for SerialError {
         match err.kind {
             serialport::ErrorKind::InvalidInput => Self::Value(err.description),
             _ => Self::Os {
-                errno: errno_of(&err.description),
+                code: errno_of(&err.description),
                 message: err.description,
             },
         }
@@ -112,9 +116,9 @@ impl From<SerialError> for PyErr {
         let message = err.to_string();
         match err {
             SerialError::Os {
-                errno: Some(errno), ..
-            } => SerialException::new_err((errno, message)),
-            SerialError::Os { errno: None, .. }
+                code: Some(code), ..
+            } => os_exception(code, message),
+            SerialError::Os { code: None, .. }
             | SerialError::AlreadyOpen
             | SerialError::NoPort
             | SerialError::Forked => SerialException::new_err(message),
@@ -126,14 +130,27 @@ impl From<SerialError> for PyErr {
     }
 }
 
+/// `SerialException(errno, message)`, as pyserial raises it.
+#[cfg(not(windows))]
+fn os_exception(errno: i32, message: String) -> PyErr {
+    SerialException::new_err((errno, message))
+}
+
+/// `SerialException(None, message, None, winerror)`, which sets `winerror` and the matching
+/// `errno` the way `OSError` does for a Windows error.
+#[cfg(windows)]
+fn os_exception(winerror: i32, message: String) -> PyErr {
+    SerialException::new_err((None::<i32>, message, None::<i32>, winerror))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn io_errors_keep_their_errno() {
+    fn io_errors_keep_their_code() {
         let err = SerialError::from(std::io::Error::from_raw_os_error(2));
-        assert!(matches!(err, SerialError::Os { errno: Some(2), .. }));
+        assert!(matches!(err, SerialError::Os { code: Some(2), .. }));
     }
 
     #[cfg(unix)]
@@ -144,7 +161,7 @@ mod tests {
         assert_eq!(
             SerialError::from(err),
             SerialError::Os {
-                errno: Some(libc::ENOTTY),
+                code: Some(libc::ENOTTY),
                 message: description.into()
             }
         );
@@ -158,7 +175,7 @@ mod tests {
             crate::backend::native::open(path, &crate::settings::Settings::default(), true, true);
         assert!(matches!(
             result.err(),
-            Some(SerialError::Os { errno: Some(libc::ENOENT), message })
+            Some(SerialError::Os { code: Some(libc::ENOENT), message })
                 if message.starts_with("could not open port /dev/oxiserial-does-not-exist: [Errno 2]")
         ));
     }

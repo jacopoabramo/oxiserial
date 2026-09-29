@@ -371,7 +371,7 @@ impl PortCore {
                 })
                 .await
                 .map_err(|err| SerialError::Os {
-                    errno: None,
+                    code: None,
                     message: format!("flush failed: {err}"),
                 })?,
                 #[cfg(not(unix))]

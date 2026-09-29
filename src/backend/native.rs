@@ -1,6 +1,6 @@
-use serialport::{ClearBuffer, SerialPort};
+use serialport::ClearBuffer;
 #[cfg(unix)]
-use serialport::{DataBits, FlowControl};
+use serialport::{DataBits, FlowControl, SerialPort};
 #[cfg(unix)]
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
 
@@ -199,7 +199,7 @@ mod platform {
     ) -> Result<(), SerialError> {
         // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): errors ignored on open.
         match write_lines(stream, rts, dtr) {
-            Err(SerialError::Os { errno: Some(e), .. })
+            Err(SerialError::Os { code: Some(e), .. })
                 if e == libc::EINVAL || e == libc::ENOTTY =>
             {
                 Ok(())
