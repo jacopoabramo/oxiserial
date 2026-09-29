@@ -2,10 +2,10 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyByteArray, PyBytes, PyDict, PyInt, PySlice, PyString, PyTuple};
+use pyo3::types::{PyByteArray, PyBytes, PyDict, PyInt, PyMemoryView, PySlice, PyString, PyTuple};
 
 use crate::errors::SerialError;
 use crate::future::{OpFuture, Outcome};
@@ -64,16 +64,31 @@ pub(crate) fn expected_bytes(expected: Option<&Bound<'_, PyAny>>) -> PyResult<Ve
     expected.map_or_else(|| Ok(LF.to_vec()), to_bytes)
 }
 
-/// Copies `bytes`, `str` (as UTF-8) or anything `bytearray(data)` accepts.
+/// Copies `bytes`, `str` (as UTF-8) or the raw bytes of an object with the buffer protocol.
+///
+/// An `int` or an iterable of ints raises `TypeError`, although `bytearray()` accepts them.
 pub(crate) fn to_bytes(data: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
-    // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): bytearray conversion.
     if let Ok(bytes) = data.cast::<PyBytes>() {
         return Ok(bytes.as_bytes().to_vec());
     }
     if let Ok(text) = data.cast::<PyString>() {
         return Ok(text.to_str()?.as_bytes().to_vec());
     }
-    Ok(PyByteArray::from(data)?.to_vec())
+    // memoryview() accepts exactly the objects with the buffer protocol.
+    let view = PyMemoryView::from(data).map_err(|err| {
+        if err.is_instance_of::<PyTypeError>(data.py()) {
+            let name = data
+                .get_type()
+                .name()
+                .map_or_else(|_| "?".into(), |name| name.to_string());
+            PyTypeError::new_err(format!(
+                "a bytes-like object or str is required, not '{name}'"
+            ))
+        } else {
+            err
+        }
+    })?;
+    Ok(PyByteArray::from(&view)?.to_vec())
 }
 
 fn describe(value: &Bound<'_, PyAny>) -> String {

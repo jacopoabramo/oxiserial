@@ -375,6 +375,9 @@ class Serial(SerialBase):
 
         Raises
         ------
+        TypeError
+            If `expected` is not `bytes`, `str` or an object with the buffer
+            protocol.
         PortNotOpenError
             If the port is closed, also while the read waits.
         SerialException
@@ -442,11 +445,14 @@ class Serial(SerialBase):
     def write(self, data: Buffer | str) -> int:
         """Write `data` and return the number of bytes written.
 
-        A `str` is sent as UTF-8; anything else that `bytearray()` accepts is
-        sent as bytes.
+        A `str` is sent as UTF-8; an object with the buffer protocol, such as
+        `bytearray`, `memoryview` or `array.array`, is sent as its raw bytes.
 
         Raises
         ------
+        TypeError
+            If `data` is not `bytes`, `str` or an object with the buffer
+            protocol, for example an `int` or a list of ints.
         PortNotOpenError
             If the port is closed.
         SerialTimeoutException
