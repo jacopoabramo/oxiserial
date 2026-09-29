@@ -14,11 +14,9 @@ serialport = { version = "4.10", default-features = false, features = ["usbporti
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "time", "sync", "macros"] }
 tokio-serial = "5.5"
 
-[target.'cfg(target_os = "linux")'.dependencies]
-nix = { version = "0.31", features = ["term"] }
-
 [target."cfg(unix)".dependencies]
 libc = "0.2.189"
+nix = { version = "0.31", features = ["term"] }
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Devices_Communication", "Win32_Foundation"] }

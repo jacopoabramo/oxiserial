@@ -53,14 +53,11 @@ fn errno_of(description: &str) -> Option<i32> {
     if let Some((_, code)) = description.rsplit_once("(os error ") {
         return code.strip_suffix(')')?.parse().ok();
     }
-    // Errors that serialport converts from nix keep only the strerror text.
+    // Errors that serialport converts from nix carry only nix's description text.
     #[cfg(unix)]
-    for errno in [libc::EINVAL, libc::ENOTTY] {
-        if std::io::Error::from_raw_os_error(errno)
-            .to_string()
-            .starts_with(description)
-        {
-            return Some(errno);
+    for errno in [nix::errno::Errno::EINVAL, nix::errno::Errno::ENOTTY] {
+        if description == errno.desc() {
+            return Some(errno as i32);
         }
     }
     None
@@ -119,8 +116,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn serialport_errors_recover_the_errno_pyserial_checks() {
-        let description = std::io::Error::from_raw_os_error(libc::ENOTTY).to_string();
-        let description = description.split(" (os error").next().unwrap();
+        let description = nix::errno::Errno::ENOTTY.desc();
         let err = tokio_serial::Error::new(tokio_serial::ErrorKind::Unknown, description);
         assert_eq!(
             SerialError::from(err),
