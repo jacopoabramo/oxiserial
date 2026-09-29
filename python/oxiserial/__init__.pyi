@@ -511,7 +511,7 @@ def serial_for_url(
     `url` is a device name such as `COM3` or `/dev/ttyUSB0`, or `loop://`, a
     port with no hardware behind it: reads return the bytes written to it,
     `cts` follows `rts` and `dsr` follows `dtr`. The other arguments go to
-    [`Serial`][oxiserial.Serial]. With `do_not_open` the port is returned
+    [`Serial`][oxiserial.Serial]. A true `do_not_open` leaves the port
     closed.
 
     Raises
