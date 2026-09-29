@@ -5,6 +5,7 @@ build-backend = "maturin"
 [project]
 name = "oxiserial"
 description = "Serial port access for Python, implemented in Rust, with the pyserial API"
+readme = "README.md"
 requires-python = ">=3.11"
 classifiers = [
     "Programming Language :: Rust",
