@@ -345,8 +345,8 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    #[test]
-    fn mark_and_space_parity_set_the_termios_bits_on_linux()
+    #[tokio::test]
+    async fn mark_and_space_parity_set_the_termios_bits_on_linux()
     -> Result<(), Box<dyn std::error::Error>> {
         use std::os::fd::{AsRawFd, BorrowedFd};
 
