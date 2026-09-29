@@ -37,15 +37,14 @@ runs:
         $installer = Get-ChildItem $dir -Recurse -Filter *.exe | Select-Object -First 1
         if (-not $installer) { throw "No installer .exe found in $dir" }
         Write-Host "Installer: $($installer.FullName)"
+        "COM0COM_INSTALLER=$($installer.FullName)" >> $env:GITHUB_ENV
 
     - name: Trust the com0com signer
       shell: pwsh
       run: |
         $ErrorActionPreference = 'Stop'
-        $dir = Join-Path $env:RUNNER_TEMP "com0com"
-        $installer = Get-ChildItem $dir -Recurse -Filter *.exe | Select-Object -First 1
         # A silent driver install needs the publisher certificate trusted first.
-        $cert = (Get-AuthenticodeSignature $installer.FullName).SignerCertificate
+        $cert = (Get-AuthenticodeSignature $env:COM0COM_INSTALLER).SignerCertificate
         $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("TrustedPublisher", "LocalMachine")
         $store.Open("ReadWrite")
         $store.Add($cert)
@@ -55,13 +54,15 @@ runs:
       shell: pwsh
       run: |
         $ErrorActionPreference = 'Stop'
-        $dir = Join-Path $env:RUNNER_TEMP "com0com"
-        $installer = Get-ChildItem $dir -Recurse -Filter *.exe | Select-Object -First 1
-        $proc = Start-Process $installer.FullName -ArgumentList "/S" -Wait -PassThru
+        $proc = Start-Process $env:COM0COM_INSTALLER -ArgumentList "/S" -Wait -PassThru
         Write-Host "Installer exit code: $($proc.ExitCode)"
+        if ($proc.ExitCode -ne 0) { throw "com0com installer failed with exit code $($proc.ExitCode)" }
 
     - name: Create the port pair
       shell: pwsh
+      env:
+        PORT_A: ${{ inputs.port-a }}
+        PORT_B: ${{ inputs.port-b }}
       run: |
         $ErrorActionPreference = 'Stop'
         $setupc = @("${env:ProgramFiles(x86)}\com0com\setupc.exe", "$env:ProgramFiles\com0com\setupc.exe") |
@@ -71,24 +72,31 @@ runs:
         # setupc.exe runs from its own directory to find its .inf files.
         Push-Location (Split-Path $setupc)
         try {
-          & $setupc install PortName=${{ inputs.port-a }} PortName=${{ inputs.port-b }}
+          & $setupc install PortName=$env:PORT_A PortName=$env:PORT_B
+          if ($LASTEXITCODE -ne 0) { throw "setupc install failed with exit code $LASTEXITCODE" }
         } finally {
           Pop-Location
         }
 
     - name: Check the ports exist
       shell: pwsh
+      env:
+        PORT_A: ${{ inputs.port-a }}
+        PORT_B: ${{ inputs.port-b }}
       run: |
         $ErrorActionPreference = 'Stop'
         $names = [System.IO.Ports.SerialPort]::GetPortNames()
         Write-Host "Ports: $($names -join ', ')"
-        foreach ($p in "${{ inputs.port-a }}", "${{ inputs.port-b }}") {
+        foreach ($p in $env:PORT_A, $env:PORT_B) {
           if ($names -notcontains $p) { throw "Port $p was not created" }
         }
 
     - name: Export the ports
       shell: pwsh
+      env:
+        PORT_A: ${{ inputs.port-a }}
+        PORT_B: ${{ inputs.port-b }}
       run: |
         $ErrorActionPreference = 'Stop'
-        "OXISERIAL_PORT_A=${{ inputs.port-a }}" >> $env:GITHUB_ENV
-        "OXISERIAL_PORT_B=${{ inputs.port-b }}" >> $env:GITHUB_ENV
+        "OXISERIAL_PORT_A=$env:PORT_A" >> $env:GITHUB_ENV
+        "OXISERIAL_PORT_B=$env:PORT_B" >> $env:GITHUB_ENV
