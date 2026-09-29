@@ -2,10 +2,9 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use pyo3::buffer::PyBuffer;
-use pyo3::exceptions::PyTypeError;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PySlice, PyString};
+use pyo3::types::{PyByteArray, PyBytes, PyDict, PyInt, PySlice, PyString, PyTuple};
 
 use crate::errors::SerialError;
 use crate::future::{OpFuture, Outcome};
@@ -47,12 +46,17 @@ pub(crate) mod ops {
     }
 
     pub async fn send_break(core: Arc<PortCore>, seconds: f64) -> Op {
-        let duration = Duration::try_from_secs_f64(seconds.max(0.0)).unwrap_or(Duration::MAX);
+        if seconds.is_nan() || seconds < 0.0 {
+            return Err(SerialError::Value(
+                "duration must be a non-negative number".into(),
+            ));
+        }
+        let duration = Duration::try_from_secs_f64(seconds).unwrap_or(Duration::MAX);
         core.send_break(duration).await.map(|()| Outcome::Unit)
     }
 }
 
-/// Copies `bytes`, `str` (as UTF-8) or any object exposing a byte buffer.
+/// Copies `bytes`, `str` (as UTF-8) or anything `bytearray(data)` accepts.
 pub(crate) fn to_bytes(data: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
     if let Ok(bytes) = data.cast::<PyBytes>() {
         return Ok(bytes.as_bytes().to_vec());
@@ -60,12 +64,51 @@ pub(crate) fn to_bytes(data: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
     if let Ok(text) = data.cast::<PyString>() {
         return Ok(text.to_str()?.as_bytes().to_vec());
     }
-    match PyBuffer::<u8>::get(data) {
-        Ok(buffer) => buffer.to_vec(data.py()),
-        Err(_) => Err(PyTypeError::new_err(format!(
-            "write() argument must be bytes-like or str, not {}",
-            data.get_type().name()?
-        ))),
+    Ok(PyByteArray::from(data)?.to_vec())
+}
+
+fn describe(value: &Bound<'_, PyAny>) -> String {
+    value
+        .repr()
+        .map_or_else(|_| "<unprintable>".into(), |text| text.to_string())
+}
+
+/// A baudrate given as anything `int()` accepts.
+pub(crate) struct Baudrate(pub u32);
+
+impl<'a, 'py> FromPyObject<'a, 'py> for Baudrate {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        let value: &Bound<'py, PyAny> = &obj;
+        let number = value
+            .py()
+            .get_type::<PyInt>()
+            .call1((value,))
+            .and_then(|int| int.extract::<i64>())
+            .map_err(|_| {
+                PyValueError::new_err(format!("Not a valid baudrate: {}", describe(value)))
+            })?;
+        Ok(Self(settings::baudrate(number)?))
+    }
+}
+
+/// A byte size given as a number equal to 5, 6, 7 or 8.
+pub(crate) struct Bytesize(pub u8);
+
+impl<'a, 'py> FromPyObject<'a, 'py> for Bytesize {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        let value: &Bound<'py, PyAny> = &obj;
+        let number = value
+            .extract::<f64>()
+            .ok()
+            .filter(|number| number.fract() == 0.0)
+            .ok_or_else(|| {
+                PyValueError::new_err(format!("Not a valid byte size: {}", describe(value)))
+            })?;
+        Ok(Self(settings::bytesize(number as i64)?))
     }
 }
 
@@ -84,24 +127,33 @@ pub struct SerialBase {
 }
 
 impl SerialBase {
+    pub(crate) fn unopened() -> Self {
+        Self {
+            core: Arc::new(PortCore::new(None, Settings::default())),
+        }
+    }
+
+    /// Validates every argument, then applies the settings and port and opens it when a port is given.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn create(
+    pub(crate) fn init(
+        &self,
+        py: Python<'_>,
         port: Option<String>,
-        baudrate: i64,
-        bytesize: i64,
+        baudrate: Baudrate,
+        bytesize: Bytesize,
         parity: &str,
         stopbits: f64,
         timeout: Option<f64>,
         xonxoff: bool,
         rtscts: bool,
         write_timeout: Option<f64>,
-        dsrdtr: bool,
+        dsrdtr: Option<bool>,
         inter_byte_timeout: Option<f64>,
         exclusive: Option<bool>,
-    ) -> PyResult<Self> {
+    ) -> PyResult<()> {
         let settings = Settings {
-            baudrate: settings::baudrate(baudrate)?,
-            bytesize: settings::bytesize(bytesize)?,
+            baudrate: baudrate.0,
+            bytesize: bytesize.0,
             parity: Parity::from_name(parity)?,
             stopbits: StopBits::from_value(stopbits)?,
             timeout: settings::seconds(timeout)?,
@@ -109,21 +161,34 @@ impl SerialBase {
             inter_byte_timeout: settings::seconds(inter_byte_timeout)?,
             xonxoff,
             rtscts,
-            dsrdtr,
+            dsrdtr: dsrdtr.unwrap_or(rtscts),
             exclusive,
         };
-        let open_now = port.is_some();
-        let core = Arc::new(PortCore::new(port, settings));
-        if open_now {
-            core.open()?;
-        }
-        Ok(Self { core })
+        self.detached(py, move |core| {
+            core.set_settings(settings)?;
+            let open_now = port.is_some();
+            core.set_port(port)?;
+            if open_now && !core.is_open() {
+                core.open()?;
+            }
+            Ok(())
+        })
     }
 
-    fn update(&self, change: impl FnOnce(&mut Settings)) -> PyResult<()> {
-        let mut settings = self.core.settings();
-        change(&mut settings);
-        Ok(self.core.set_settings(settings)?)
+    fn detached<R: Send>(
+        &self,
+        py: Python<'_>,
+        f: impl FnOnce(&PortCore) -> Result<R, SerialError> + Send,
+    ) -> PyResult<R> {
+        Ok(py.detach(|| f(&self.core))?)
+    }
+
+    fn update(&self, py: Python<'_>, change: impl FnOnce(&mut Settings) + Send) -> PyResult<()> {
+        self.detached(py, |core| {
+            let mut settings = core.settings();
+            change(&mut settings);
+            core.set_settings(settings)
+        })
     }
 }
 
@@ -135,8 +200,8 @@ impl SerialBase {
     }
 
     #[setter]
-    fn set_port(&self, value: Option<String>) -> PyResult<()> {
-        Ok(self.core.set_port(value)?)
+    fn set_port(&self, py: Python<'_>, value: Option<String>) -> PyResult<()> {
+        self.detached(py, |core| core.set_port(value))
     }
 
     #[getter]
@@ -145,8 +210,8 @@ impl SerialBase {
     }
 
     #[getter]
-    fn is_open(&self) -> bool {
-        self.core.is_open()
+    fn is_open(&self, py: Python<'_>) -> bool {
+        py.detach(|| self.core.is_open())
     }
 
     #[getter]
@@ -155,9 +220,9 @@ impl SerialBase {
     }
 
     #[setter]
-    fn set_baudrate(&self, value: i64) -> PyResult<()> {
-        let value = settings::baudrate(value)?;
-        self.update(|s| s.baudrate = value)
+    fn set_baudrate(&self, py: Python<'_>, value: Baudrate) -> PyResult<()> {
+        let value = value.0;
+        self.update(py, move |s| s.baudrate = value)
     }
 
     #[getter]
@@ -166,9 +231,9 @@ impl SerialBase {
     }
 
     #[setter]
-    fn set_bytesize(&self, value: i64) -> PyResult<()> {
-        let value = settings::bytesize(value)?;
-        self.update(|s| s.bytesize = value)
+    fn set_bytesize(&self, py: Python<'_>, value: Bytesize) -> PyResult<()> {
+        let value = value.0;
+        self.update(py, move |s| s.bytesize = value)
     }
 
     #[getter]
@@ -177,9 +242,9 @@ impl SerialBase {
     }
 
     #[setter]
-    fn set_parity(&self, value: &str) -> PyResult<()> {
+    fn set_parity(&self, py: Python<'_>, value: &str) -> PyResult<()> {
         let value = Parity::from_name(value)?;
-        self.update(|s| s.parity = value)
+        self.update(py, move |s| s.parity = value)
     }
 
     #[getter]
@@ -188,9 +253,9 @@ impl SerialBase {
     }
 
     #[setter]
-    fn set_stopbits(&self, value: f64) -> PyResult<()> {
+    fn set_stopbits(&self, py: Python<'_>, value: f64) -> PyResult<()> {
         let value = StopBits::from_value(value)?;
-        self.update(|s| s.stopbits = value)
+        self.update(py, move |s| s.stopbits = value)
     }
 
     #[getter]
@@ -199,9 +264,9 @@ impl SerialBase {
     }
 
     #[setter]
-    fn set_timeout(&self, value: Option<f64>) -> PyResult<()> {
+    fn set_timeout(&self, py: Python<'_>, value: Option<f64>) -> PyResult<()> {
         let value = settings::seconds(value)?;
-        self.update(|s| s.timeout = value)
+        self.update(py, move |s| s.timeout = value)
     }
 
     #[getter]
@@ -210,9 +275,9 @@ impl SerialBase {
     }
 
     #[setter]
-    fn set_write_timeout(&self, value: Option<f64>) -> PyResult<()> {
+    fn set_write_timeout(&self, py: Python<'_>, value: Option<f64>) -> PyResult<()> {
         let value = settings::seconds(value)?;
-        self.update(|s| s.write_timeout = value)
+        self.update(py, move |s| s.write_timeout = value)
     }
 
     #[getter]
@@ -221,9 +286,9 @@ impl SerialBase {
     }
 
     #[setter]
-    fn set_inter_byte_timeout(&self, value: Option<f64>) -> PyResult<()> {
+    fn set_inter_byte_timeout(&self, py: Python<'_>, value: Option<f64>) -> PyResult<()> {
         let value = settings::seconds(value)?;
-        self.update(|s| s.inter_byte_timeout = value)
+        self.update(py, move |s| s.inter_byte_timeout = value)
     }
 
     #[getter]
@@ -232,8 +297,8 @@ impl SerialBase {
     }
 
     #[setter]
-    fn set_xonxoff(&self, value: bool) -> PyResult<()> {
-        self.update(|s| s.xonxoff = value)
+    fn set_xonxoff(&self, py: Python<'_>, value: bool) -> PyResult<()> {
+        self.update(py, move |s| s.xonxoff = value)
     }
 
     #[getter]
@@ -242,8 +307,8 @@ impl SerialBase {
     }
 
     #[setter]
-    fn set_rtscts(&self, value: bool) -> PyResult<()> {
-        self.update(|s| s.rtscts = value)
+    fn set_rtscts(&self, py: Python<'_>, value: bool) -> PyResult<()> {
+        self.update(py, move |s| s.rtscts = value)
     }
 
     #[getter]
@@ -252,8 +317,9 @@ impl SerialBase {
     }
 
     #[setter]
-    fn set_dsrdtr(&self, value: bool) -> PyResult<()> {
-        self.update(|s| s.dsrdtr = value)
+    fn set_dsrdtr(&self, py: Python<'_>, value: Option<bool>) -> PyResult<()> {
+        let value = value.unwrap_or_else(|| self.core.settings().rtscts);
+        self.update(py, move |s| s.dsrdtr = value)
     }
 
     #[getter]
@@ -263,8 +329,8 @@ impl SerialBase {
 
     // ponytail: takes effect at the next open; pyserial also re-locks an open POSIX port, add that if someone toggles it while open
     #[setter]
-    fn set_exclusive(&self, value: Option<bool>) -> PyResult<()> {
-        self.update(|s| s.exclusive = value)
+    fn set_exclusive(&self, py: Python<'_>, value: Option<bool>) -> PyResult<()> {
+        self.update(py, move |s| s.exclusive = value)
     }
 
     #[getter]
@@ -273,8 +339,8 @@ impl SerialBase {
     }
 
     #[setter]
-    fn set_rts(&self, value: bool) -> PyResult<()> {
-        Ok(self.core.set_rts(value)?)
+    fn set_rts(&self, py: Python<'_>, value: bool) -> PyResult<()> {
+        self.detached(py, |core| core.set_rts(value))
     }
 
     #[getter]
@@ -283,8 +349,8 @@ impl SerialBase {
     }
 
     #[setter]
-    fn set_dtr(&self, value: bool) -> PyResult<()> {
-        Ok(self.core.set_dtr(value)?)
+    fn set_dtr(&self, py: Python<'_>, value: bool) -> PyResult<()> {
+        self.detached(py, |core| core.set_dtr(value))
     }
 
     #[getter]
@@ -293,54 +359,54 @@ impl SerialBase {
     }
 
     #[setter]
-    fn set_break_condition(&self, value: bool) -> PyResult<()> {
-        Ok(self.core.set_break_condition(value)?)
+    fn set_break_condition(&self, py: Python<'_>, value: bool) -> PyResult<()> {
+        self.detached(py, |core| core.set_break_condition(value))
     }
 
     #[getter]
-    fn cts(&self) -> PyResult<bool> {
-        Ok(self.core.cts()?)
+    fn cts(&self, py: Python<'_>) -> PyResult<bool> {
+        self.detached(py, PortCore::cts)
     }
 
     #[getter]
-    fn dsr(&self) -> PyResult<bool> {
-        Ok(self.core.dsr()?)
+    fn dsr(&self, py: Python<'_>) -> PyResult<bool> {
+        self.detached(py, PortCore::dsr)
     }
 
     #[getter]
-    fn ri(&self) -> PyResult<bool> {
-        Ok(self.core.ri()?)
+    fn ri(&self, py: Python<'_>) -> PyResult<bool> {
+        self.detached(py, PortCore::ri)
     }
 
     #[getter]
-    fn cd(&self) -> PyResult<bool> {
-        Ok(self.core.cd()?)
+    fn cd(&self, py: Python<'_>) -> PyResult<bool> {
+        self.detached(py, PortCore::cd)
     }
 
     #[getter]
-    fn in_waiting(&self) -> PyResult<usize> {
-        Ok(self.core.in_waiting()?)
+    fn in_waiting(&self, py: Python<'_>) -> PyResult<usize> {
+        self.detached(py, PortCore::in_waiting)
     }
 
     #[getter]
-    fn out_waiting(&self) -> PyResult<usize> {
-        Ok(self.core.out_waiting()?)
+    fn out_waiting(&self, py: Python<'_>) -> PyResult<usize> {
+        self.detached(py, PortCore::out_waiting)
     }
 
-    fn open(&self) -> PyResult<()> {
-        Ok(self.core.open()?)
+    fn open(&self, py: Python<'_>) -> PyResult<()> {
+        self.detached(py, PortCore::open)
     }
 
-    fn close(&self) {
-        self.core.close();
+    fn close(&self, py: Python<'_>) {
+        py.detach(|| self.core.close());
     }
 
-    fn reset_input_buffer(&self) -> PyResult<()> {
-        Ok(self.core.reset_input_buffer()?)
+    fn reset_input_buffer(&self, py: Python<'_>) -> PyResult<()> {
+        self.detached(py, PortCore::reset_input_buffer)
     }
 
-    fn reset_output_buffer(&self) -> PyResult<()> {
-        Ok(self.core.reset_output_buffer()?)
+    fn reset_output_buffer(&self, py: Python<'_>) -> PyResult<()> {
+        self.detached(py, PortCore::reset_output_buffer)
     }
 
     fn get_settings<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
@@ -359,39 +425,44 @@ impl SerialBase {
         Ok(d)
     }
 
-    fn apply_settings(&self, d: &Bound<'_, PyDict>) -> PyResult<()> {
+    fn apply_settings(&self, py: Python<'_>, d: &Bound<'_, PyAny>) -> PyResult<()> {
+        let missing = py.import("builtins")?.getattr("object")?.call0()?;
+        let fetch = |key: &str| -> PyResult<Option<Bound<'_, PyAny>>> {
+            let value = d.call_method1("get", (key, &missing))?;
+            Ok((!value.is(&missing)).then_some(value))
+        };
         let mut s = self.core.settings();
-        if let Some(v) = d.get_item("baudrate")? {
-            s.baudrate = settings::baudrate(v.extract()?)?;
+        if let Some(v) = fetch("baudrate")? {
+            s.baudrate = v.extract::<Baudrate>()?.0;
         }
-        if let Some(v) = d.get_item("bytesize")? {
-            s.bytesize = settings::bytesize(v.extract()?)?;
+        if let Some(v) = fetch("bytesize")? {
+            s.bytesize = v.extract::<Bytesize>()?.0;
         }
-        if let Some(v) = d.get_item("parity")? {
+        if let Some(v) = fetch("parity")? {
             s.parity = Parity::from_name(&v.extract::<String>()?)?;
         }
-        if let Some(v) = d.get_item("stopbits")? {
+        if let Some(v) = fetch("stopbits")? {
             s.stopbits = StopBits::from_value(v.extract()?)?;
         }
-        if let Some(v) = d.get_item("xonxoff")? {
+        if let Some(v) = fetch("xonxoff")? {
             s.xonxoff = v.extract()?;
         }
-        if let Some(v) = d.get_item("dsrdtr")? {
-            s.dsrdtr = v.extract()?;
+        if let Some(v) = fetch("dsrdtr")? {
+            s.dsrdtr = v.extract::<Option<bool>>()?.unwrap_or(s.rtscts);
         }
-        if let Some(v) = d.get_item("rtscts")? {
+        if let Some(v) = fetch("rtscts")? {
             s.rtscts = v.extract()?;
         }
-        if let Some(v) = d.get_item("timeout")? {
+        if let Some(v) = fetch("timeout")? {
             s.timeout = settings::seconds(v.extract()?)?;
         }
-        if let Some(v) = d.get_item("write_timeout")? {
+        if let Some(v) = fetch("write_timeout")? {
             s.write_timeout = settings::seconds(v.extract()?)?;
         }
-        if let Some(v) = d.get_item("inter_byte_timeout")? {
+        if let Some(v) = fetch("inter_byte_timeout")? {
             s.inter_byte_timeout = settings::seconds(v.extract()?)?;
         }
-        Ok(self.core.set_settings(s)?)
+        self.detached(py, move |core| core.set_settings(s))
     }
 
     fn readable(&self) -> bool {
@@ -403,7 +474,7 @@ impl SerialBase {
     }
 
     fn fileno(&self, py: Python<'_>) -> PyResult<i32> {
-        match self.core.fileno()? {
+        match self.detached(py, PortCore::fileno)? {
             Some(fd) => Ok(fd),
             None => Err(PyErr::from_value(
                 py.import("io")?
@@ -415,7 +486,7 @@ impl SerialBase {
 }
 
 /// Serial port with pyserial's blocking API.
-#[pyclass(module = "oxiserial", extends = SerialBase, frozen)]
+#[pyclass(module = "oxiserial", extends = SerialBase, subclass, frozen)]
 pub struct Serial;
 
 impl Serial {
@@ -434,27 +505,39 @@ impl Serial {
 #[pymethods]
 impl Serial {
     #[new]
-    #[pyo3(signature = (
-        port = None, baudrate = 9600, bytesize = 8, parity = "N", stopbits = 1.0,
-        timeout = None, xonxoff = false, rtscts = false, write_timeout = None,
-        dsrdtr = false, inter_byte_timeout = None, exclusive = None
-    ))]
-    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (*_args, **_kwargs))]
     fn new(
+        _args: &Bound<'_, PyTuple>,
+        _kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyClassInitializer<Self> {
+        PyClassInitializer::from(SerialBase::unopened()).add_subclass(Self)
+    }
+
+    #[pyo3(
+        signature = (
+            port = None, baudrate = Baudrate(9600), bytesize = Bytesize(8), parity = "N",
+            stopbits = 1.0, timeout = None, xonxoff = false, rtscts = false,
+            write_timeout = None, dsrdtr = Some(false), inter_byte_timeout = None, exclusive = None
+        ),
+    )]
+    #[allow(clippy::too_many_arguments)]
+    fn __init__(
+        slf: &Bound<'_, Self>,
         port: Option<String>,
-        baudrate: i64,
-        bytesize: i64,
+        baudrate: Baudrate,
+        bytesize: Bytesize,
         parity: &str,
         stopbits: f64,
         timeout: Option<f64>,
         xonxoff: bool,
         rtscts: bool,
         write_timeout: Option<f64>,
-        dsrdtr: bool,
+        dsrdtr: Option<bool>,
         inter_byte_timeout: Option<f64>,
         exclusive: Option<bool>,
-    ) -> PyResult<PyClassInitializer<Self>> {
-        let base = SerialBase::create(
+    ) -> PyResult<()> {
+        slf.as_super().get().init(
+            slf.py(),
             port,
             baudrate,
             bytesize,
@@ -467,8 +550,7 @@ impl Serial {
             dsrdtr,
             inter_byte_timeout,
             exclusive,
-        )?;
-        Ok(PyClassInitializer::from(base).add_subclass(Self))
+        )
     }
 
     #[pyo3(signature = (size = 1))]
@@ -522,19 +604,20 @@ impl Serial {
 
     fn __enter__<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, Self>> {
         let core = Self::core(slf);
-        if core.port().is_some() && !core.is_open() {
-            core.open()?;
-        }
+        slf.py().detach(|| {
+            if core.port().is_some() && !core.is_open() {
+                core.open()
+            } else {
+                Ok(())
+            }
+        })?;
         Ok(slf.clone())
     }
 
-    fn __exit__(
-        slf: &Bound<'_, Self>,
-        _exc_type: &Bound<'_, PyAny>,
-        _exc_value: &Bound<'_, PyAny>,
-        _traceback: &Bound<'_, PyAny>,
-    ) {
-        Self::core(slf).close();
+    #[pyo3(signature = (*_args))]
+    fn __exit__(slf: &Bound<'_, Self>, _args: &Bound<'_, PyTuple>) {
+        let core = Self::core(slf);
+        slf.py().detach(|| core.close());
     }
 
     fn __iter__<'py>(slf: &Bound<'py, Self>) -> Bound<'py, Self> {

@@ -1,7 +1,10 @@
 import _thread
+import array
 import threading
 import time
 from collections.abc import Iterator
+from types import MappingProxyType
+from typing import Any
 
 import pytest
 
@@ -165,5 +168,81 @@ def test_write_accepts_bytes_like_and_str(ports: tuple[Serial, Serial]) -> None:
     assert b.read(3) == b"h\xc3\xa9"
     with pytest.raises(UnicodeEncodeError):
         a.write("\ud800")
+
+
+def test_write_accepts_whatever_bytearray_accepts(ports: tuple[Serial, Serial]) -> None:
+    a, b = ports
+    assert a.write([2, 3]) == 2  # type: ignore[arg-type]
+    assert a.write(array.array("H", [1])) == 2
+    assert a.write(memoryview(b"abcd").cast("I")) == 4
+    assert a.write(5) == 5  # type: ignore[arg-type]
+    assert b.read(13) == b"\x02\x03\x01\x00abcd" + b"\x00" * 5
     with pytest.raises(TypeError):
-        a.write(5)  # type: ignore[arg-type]
+        a.write(object())  # type: ignore[arg-type]
+
+
+def test_flush_returns_after_a_write(ports: tuple[Serial, Serial]) -> None:
+    a, b = ports
+    a.write(b"abc")
+    a.flush()
+    assert b.read(3) == b"abc"
+
+
+def test_subclass_can_add_parameters_and_attributes(mock_pair: tuple[str, str]) -> None:
+    class MySerial(Serial):
+        def __init__(self, port: str, extra: str, **kwargs: Any) -> None:
+            super().__init__(port, **kwargs)
+            self.extra = extra
+
+    a = MySerial(mock_pair[0], "x", timeout=1)
+    b = Serial(mock_pair[1], timeout=1)
+    try:
+        assert a.is_open and a.extra == "x"
+        a.write(b"hi")
+        assert b.read(2) == b"hi"
+    finally:
+        a.close()
+        b.close()
+
+
+def test_numeric_settings_are_coerced_like_pyserial() -> None:
+    port = Serial(baudrate=9600.0, bytesize=8.0)  # type: ignore[arg-type]
+    assert port.baudrate == 9600 and port.bytesize == 8
+    port.baudrate = "19200"  # type: ignore[assignment]
+    assert port.baudrate == 19200
+    with pytest.raises(ValueError, match="baudrate"):
+        Serial(baudrate="fast")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="byte size"):
+        Serial(bytesize=8.5)  # type: ignore[arg-type]
+
+
+def test_dsrdtr_none_follows_rtscts() -> None:
+    assert Serial(rtscts=True, dsrdtr=None).dsrdtr is True
+    assert Serial(rtscts=True).dsrdtr is False
+    port = Serial(rtscts=True)
+    port.dsrdtr = None
+    assert port.dsrdtr is True
+
+
+def test_apply_settings_accepts_any_mapping() -> None:
+    port = Serial()
+    port.apply_settings(MappingProxyType({"baudrate": 4800, "timeout": 2}))
+    assert port.baudrate == 4800 and port.timeout == 2
+    port.apply_settings(MappingProxyType({"timeout": None}))
+    assert port.timeout is None and port.baudrate == 4800
+
+
+def test_exit_accepts_any_arguments(mock_pair: tuple[str, str]) -> None:
+    port = Serial(mock_pair[0])
+    port.__exit__()
+    assert not port.is_open
+
+
+@pytest.mark.parametrize("duration", [-1, float("nan")])
+def test_send_break_rejects_invalid_durations(
+    ports: tuple[Serial, Serial], duration: float
+) -> None:
+    a, _ = ports
+    with pytest.raises(ValueError):
+        a.send_break(duration)
+    assert not a.break_condition
