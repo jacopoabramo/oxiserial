@@ -1,8 +1,11 @@
 mod backend;
 mod errors;
+mod future;
 mod port;
 mod runtime;
 mod settings;
+#[cfg(feature = "test-backend")]
+mod testing;
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -71,11 +74,19 @@ fn _oxiserial(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
 
     let aio_module = PyModule::new(py, "oxiserial.aio")?;
+    aio_module.add_class::<future::OpFuture>()?;
     add_submodule(m, "aio", &aio_module)?;
 
     let tools_module = PyModule::new(py, "oxiserial.tools")?;
     let list_ports_module = PyModule::new(py, "oxiserial.tools.list_ports")?;
     add_submodule(&tools_module, "list_ports", &list_ports_module)?;
     add_submodule(m, "tools", &tools_module)?;
+
+    #[cfg(feature = "test-backend")]
+    {
+        let testing = PyModule::new(py, "oxiserial._testing")?;
+        testing::register(&testing)?;
+        add_submodule(m, "_testing", &testing)?;
+    }
     Ok(())
 }
