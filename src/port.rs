@@ -275,7 +275,14 @@ impl PortCore {
         size: Option<usize>,
     ) -> Result<Vec<u8>, SerialError> {
         let _turn = self.read_turn.lock().await;
-        self.until_closed(self.read_until_locked(expected, size))
+        self.until_closed(self.read_until_locked(expected, size, false))
+            .await
+    }
+
+    /// Reads up to a newline, giving each byte the full timeout, as `io.IOBase.readline` does.
+    pub async fn readline(&self, size: Option<usize>) -> Result<Vec<u8>, SerialError> {
+        let _turn = self.read_turn.lock().await;
+        self.until_closed(self.read_until_locked(b"\n", size, true))
             .await
     }
 
@@ -286,7 +293,7 @@ impl PortCore {
             let mut lines = Vec::new();
             let mut total = 0;
             loop {
-                let line = self.read_until_locked(b"\n", None).await?;
+                let line = self.read_until_locked(b"\n", None, true).await?;
                 if line.is_empty() {
                     break;
                 }
@@ -430,19 +437,26 @@ impl PortCore {
     }
 
     // ponytail: one byte per poll so nothing past the terminator is consumed; a read-ahead buffer belongs to the throughput work
+    /// With `per_byte`, the timeout restarts for every byte, as for a series of `read(1)` calls.
     async fn read_until_locked(
         &self,
         expected: &[u8],
         size: Option<usize>,
+        per_byte: bool,
     ) -> Result<Vec<u8>, SerialError> {
         let settings = self.settings();
-        let overall =
-            settings::duration(settings.timeout).and_then(|t| Instant::now().checked_add(t));
+        let timeout = settings::duration(settings.timeout);
+        let from_now = || timeout.and_then(|t| Instant::now().checked_add(t));
+        let overall = from_now();
         let gap = settings::duration(settings.inter_byte_timeout);
         let mut out = Vec::new();
         let mut byte = [0u8; 1];
         while size.is_none_or(|limit| out.len() < limit) {
-            let deadline = next_deadline(overall, gap, !out.is_empty());
+            let deadline = if per_byte {
+                from_now()
+            } else {
+                next_deadline(overall, gap, !out.is_empty())
+            };
             match self.read_chunk(&mut byte, deadline).await? {
                 Some(_) => out.push(byte[0]),
                 None => break,
@@ -616,6 +630,33 @@ mod tests {
         assert_eq!(b.read_until(b"\n", None).await?, b"y\n");
         assert_eq!(b.read_until(b"\n", Some(3)).await?, b"abc");
         assert_eq!(b.read(10).await?, b"def");
+        Ok(())
+    }
+
+    /// Sends `bytes` to `port` one at a time, 150 ms apart.
+    async fn trickle(port: &PortCore, bytes: &[u8]) -> Result<(), SerialError> {
+        for byte in bytes {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            port.write(&[*byte]).await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn readline_gives_each_byte_the_full_timeout() -> Result<(), SerialError> {
+        let (a, b, _) = open_pair(|s| s.timeout = Some(0.3))?;
+        let (line, written) = tokio::join!(b.readline(None), trickle(&a, b"abcd\n"));
+        written?;
+        assert_eq!(line?, b"abcd\n");
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn read_until_keeps_one_overall_deadline() -> Result<(), SerialError> {
+        let (a, b, _) = open_pair(|s| s.timeout = Some(0.4))?;
+        let (line, written) = tokio::join!(b.read_until(b"\n", None), trickle(&a, b"abcd\n"));
+        written?;
+        assert_eq!(line?, b"ab");
         Ok(())
     }
 

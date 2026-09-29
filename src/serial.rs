@@ -29,7 +29,9 @@ pub(crate) mod ops {
 
     /// A negative size means no limit, as in `io.IOBase.readline`.
     pub async fn readline(core: Arc<PortCore>, size: isize) -> Op {
-        read_until(core, LF.to_vec(), usize::try_from(size).ok()).await
+        core.readline(usize::try_from(size).ok())
+            .await
+            .map(Outcome::Bytes)
     }
 
     pub async fn readlines(core: Arc<PortCore>, hint: isize) -> Op {
