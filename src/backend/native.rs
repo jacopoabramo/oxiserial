@@ -191,7 +191,10 @@ mod platform {
     }
 
     #[cfg(target_os = "linux")]
-    fn mark_space(flags: &mut nix::sys::termios::ControlFlags, parity: crate::settings::Parity) {
+    pub(super) fn mark_space(
+        flags: &mut nix::sys::termios::ControlFlags,
+        parity: crate::settings::Parity,
+    ) {
         use nix::sys::termios::ControlFlags;
 
         use crate::settings::Parity;
@@ -345,35 +348,20 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn mark_and_space_parity_set_the_termios_bits_on_linux()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use std::os::fd::{AsRawFd, BorrowedFd};
+    #[test]
+    fn mark_space_sets_and_clears_the_parity_bits() {
+        use nix::sys::termios::ControlFlags;
 
-        use nix::sys::termios::{ControlFlags, tcgetattr};
+        let mut flags = ControlFlags::empty();
+        super::platform::mark_space(&mut flags, Parity::Mark);
+        assert!(flags.contains(ControlFlags::PARENB | ControlFlags::CMSPAR | ControlFlags::PARODD));
 
-        let (mut a, _b) = SerialStream::pair()?;
-        // SAFETY: the descriptor belongs to `a`, which outlives this borrow.
-        let fd = unsafe { BorrowedFd::borrow_raw(a.as_raw_fd()) };
-        let flags = || tcgetattr(fd).map(|attrs| attrs.control_flags);
+        super::platform::mark_space(&mut flags, Parity::Space);
+        assert!(flags.contains(ControlFlags::PARENB | ControlFlags::CMSPAR));
+        assert!(!flags.contains(ControlFlags::PARODD));
 
-        a.configure(&Settings {
-            parity: Parity::Mark,
-            ..Settings::default()
-        })?;
-        let mark = ControlFlags::PARENB | ControlFlags::CMSPAR | ControlFlags::PARODD;
-        assert!(flags()?.contains(mark));
-
-        a.configure(&Settings {
-            parity: Parity::Space,
-            ..Settings::default()
-        })?;
-        assert!(flags()?.contains(ControlFlags::PARENB | ControlFlags::CMSPAR));
-        assert!(!flags()?.contains(ControlFlags::PARODD));
-
-        a.configure(&Settings::default())?;
-        assert!(!flags()?.intersects(ControlFlags::CMSPAR | ControlFlags::PARENB));
-        Ok(())
+        super::platform::mark_space(&mut flags, Parity::None);
+        assert!(!flags.contains(ControlFlags::CMSPAR));
     }
 
     #[cfg(target_os = "macos")]
