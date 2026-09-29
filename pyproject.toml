@@ -49,7 +49,7 @@ target-version = "py311"
 src = ["python", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "PYI"]
+select = ["E", "F", "W", "I", "UP", "B", "PYI", "PLC0415"]
 
 [tool.ruff.lint.per-file-ignores]
 "python/oxiserial/__init__.py" = ["F401"]

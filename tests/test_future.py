@@ -7,10 +7,7 @@ from typing import Any
 import pytest
 
 from conftest import Runner
-from oxiserial import SerialException
-
-pytest.importorskip("oxiserial._testing")
-from oxiserial import _testing  # noqa: E402
+from oxiserial import SerialException, _testing
 
 
 def test_wait_returns_the_value() -> None:

@@ -16,10 +16,8 @@ from oxiserial import (
     Serial,
     SerialException,
     SerialTimeoutException,
+    _testing,
 )
-
-pytest.importorskip("oxiserial._testing")
-from oxiserial import _testing  # noqa: E402
 
 
 @pytest.fixture

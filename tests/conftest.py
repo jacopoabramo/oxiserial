@@ -6,8 +6,10 @@ from collections.abc import Callable, Coroutine
 from typing import Any
 
 import pytest
+import rsloop
 
 import oxiserial
+from oxiserial import _testing
 
 Runner = Callable[[Coroutine[Any, Any, Any]], Any]
 
@@ -21,9 +23,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 @pytest.fixture
 def mock_pair() -> tuple[str, str]:
     """Provide the names of two connected mock ports."""
-    testing = pytest.importorskip("oxiserial._testing")
-    names: tuple[str, str] = testing.mock_pair()
-    return names
+    return _testing.mock_pair()
 
 
 @pytest.fixture
@@ -59,7 +59,6 @@ def modem_pair(real_pair: tuple[str, str]) -> tuple[str, str]:
 def run(request: pytest.FixtureRequest) -> Runner:
     """Provide a function that runs a coroutine on each supported event loop."""
     if request.param == "rsloop":
-        rsloop = pytest.importorskip("rsloop")
         runner: Runner = rsloop.run
         return runner
     return asyncio.run
