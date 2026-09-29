@@ -1,3 +1,5 @@
+import pytest
+
 from oxiserial.tools.list_ports import ListPortInfo, comports
 
 
@@ -29,3 +31,24 @@ def test_equality_compares_device_only() -> None:
     assert port != ListPortInfo("COM4")
     assert port != "COM3"
     assert port != 3
+
+
+def test_sorted_orders_ports_naturally() -> None:
+    ports = sorted([ListPortInfo("COM10"), ListPortInfo("COM2"), ListPortInfo("COM1")])
+    assert [port.device for port in ports] == ["COM1", "COM2", "COM10"]
+
+
+def test_ordering_against_other_types_raises() -> None:
+    with pytest.raises(TypeError):
+        ListPortInfo("COM1") < 5  # type: ignore[operator]  # noqa: B015
+
+
+def test_subclass_and_dynamic_attributes() -> None:
+    class Tagged(ListPortInfo):
+        def tag(self) -> str:
+            return f"tag:{self.name}"
+
+    assert Tagged("/dev/ttyS0").tag() == "tag:ttyS0"
+    port = ListPortInfo("COM1")
+    port.custom = 1  # type: ignore[attr-defined]
+    assert port.custom == 1  # type: ignore[attr-defined]

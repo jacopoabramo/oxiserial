@@ -1,9 +1,11 @@
 from collections.abc import Iterator
-from typing import Self, final
+from typing import Self
+
+from typing_extensions import disjoint_base
 
 __all__ = ["ListPortInfo", "comports"]
 
-@final
+@disjoint_base
 class ListPortInfo:
     device: str
     name: str
@@ -22,6 +24,7 @@ class ListPortInfo:
     def apply_usb_info(self) -> None: ...
     def __getitem__(self, index: int, /) -> str: ...
     def __iter__(self) -> Iterator[str]: ...
+    def __lt__(self, other: ListPortInfo, /) -> bool: ...
     def __eq__(self, other: object, /) -> bool: ...
     def __hash__(self) -> int: ...
 

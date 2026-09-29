@@ -1,7 +1,7 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 
-use pyo3::exceptions::PyIndexError;
+use pyo3::exceptions::{PyIndexError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 use serialport::Location;
@@ -10,7 +10,13 @@ use tokio_serial::{SerialPortInfo, SerialPortType};
 use crate::errors::SerialError;
 
 /// Description of one serial port, with pyserial's attributes.
-#[pyclass(module = "oxiserial.tools.list_ports", get_all, set_all)]
+#[pyclass(
+    module = "oxiserial.tools.list_ports",
+    subclass,
+    dict,
+    get_all,
+    set_all
+)]
 pub struct ListPortInfo {
     device: String,
     name: String,
@@ -25,9 +31,40 @@ pub struct ListPortInfo {
     interface: Option<String>,
 }
 
+/// Bus number pyserial shows on Windows: the last `USBROOT(n)` index plus one.
+fn windows_bus_number(bus_id: &str) -> Option<u32> {
+    const MARKER: &str = "USBROOT(";
+    let digits: String = bus_id[bus_id.rfind(MARKER)? + MARKER.len()..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse::<u32>().ok().map(|n| n.saturating_add(1))
+}
+
 fn format_location(location: &Location) -> String {
     let chain: Vec<String> = location.port_chain().iter().map(u8::to_string).collect();
-    format!("{}-{}", location.bus_id(), chain.join("."))
+    let bus = windows_bus_number(location.bus_id())
+        .map_or_else(|| location.bus_id().to_owned(), |n| n.to_string());
+    format!("{bus}-{}", chain.join("."))
+}
+
+/// Natural-sort key: each digit run is one integer, each other run its UTF-8 bytes.
+fn natural_key(text: &str) -> Vec<Vec<u128>> {
+    let mut key = Vec::new();
+    let mut rest = text;
+    while let Some(first) = rest.chars().next() {
+        let digits = first.is_ascii_digit();
+        let end = rest
+            .find(|c: char| c.is_ascii_digit() != digits)
+            .unwrap_or(rest.len());
+        let (run, tail) = rest.split_at(end);
+        rest = tail;
+        match run.parse::<u128>() {
+            Ok(n) if digits => key.push(vec![n]),
+            _ => key.push(run.bytes().map(u128::from).collect()),
+        }
+    }
+    key
 }
 
 impl ListPortInfo {
@@ -118,6 +155,16 @@ impl ListPortInfo {
             .map(Bound::into_any)
     }
 
+    fn __lt__(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
+        match other.extract::<PyRef<'_, Self>>() {
+            Ok(other) => Ok(natural_key(&self.device) < natural_key(&other.device)),
+            Err(_) => Err(PyTypeError::new_err(format!(
+                "unorderable types: ListPortInfo() and {}()",
+                other.get_type().name()?
+            ))),
+        }
+    }
+
     fn __str__(&self) -> String {
         format!("{} - {}", self.device, self.description)
     }
@@ -144,4 +191,27 @@ pub fn comports(py: Python<'_>, include_links: bool) -> PyResult<Vec<ListPortInf
         .detach(tokio_serial::available_ports)
         .map_err(SerialError::from)?;
     Ok(ports.into_iter().map(ListPortInfo::from_info).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_bus_id_becomes_usbroot_index_plus_one() {
+        let location = Location::new("PCIROOT(0)#PCI(1400)#USBROOT(0)".into(), vec![2, 1]);
+        assert_eq!(format_location(&location), "1-2.1");
+    }
+
+    #[test]
+    fn numeric_bus_id_is_kept() {
+        let location = Location::new("3".into(), vec![1, 4]);
+        assert_eq!(format_location(&location), "3-1.4");
+    }
+
+    #[test]
+    fn natural_key_orders_digit_runs_numerically() {
+        assert!(natural_key("COM2") < natural_key("COM10"));
+        assert!(natural_key("COM1") < natural_key("COM2"));
+    }
 }
