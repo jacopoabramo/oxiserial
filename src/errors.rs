@@ -154,7 +154,8 @@ mod tests {
     #[test]
     fn opening_a_missing_port_keeps_enoent() {
         let path = "/dev/oxiserial-does-not-exist";
-        let result = crate::backend::native::open(path, &crate::settings::Settings::default());
+        let result =
+            crate::backend::native::open(path, &crate::settings::Settings::default(), true, true);
         assert!(matches!(
             result.err(),
             Some(SerialError::Os { errno: Some(libc::ENOENT), message })

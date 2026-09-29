@@ -78,7 +78,7 @@ fn ignore_unsupported(result: Result<(), SerialError>) -> Result<(), SerialError
 
 /// Writes the stored DTR and RTS levels, except for a line the flow control setting drives.
 ///
-/// Backends may reset the lines when the port is opened or reconfigured.
+/// Opening a device may set the lines itself, so they are written again after open.
 fn restore_lines(
     port: &mut dyn Backend,
     settings: &Settings,
@@ -174,7 +174,7 @@ impl PortCore {
             return Err(SerialError::AlreadyOpen);
         }
         // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): open order.
-        let mut opened = backend::open(&port, &settings)?;
+        let mut opened = backend::open(&port, &settings, rts, dtr)?;
         restore_lines(opened.as_mut(), &settings, rts, dtr)?;
         opened.clear_buffers(true, false)?;
         *slot = Some(opened);
@@ -211,10 +211,7 @@ impl PortCore {
             (state.settings.clone(), differs, state.rts, state.dtr)
         };
         match slot.as_mut() {
-            Some(port) if differs => {
-                port.configure(&settings)?;
-                restore_lines(port.as_mut(), &settings, rts, dtr)
-            }
+            Some(port) if differs => port.configure(&settings, rts, dtr),
             _ => Ok(()),
         }
     }
@@ -585,13 +582,14 @@ mod tests {
         let (a, _b, a_name) = open_pair(|_| {})?;
         a.set_rts(false)?;
         a.set_dtr(false)?;
+        mock::update(&a_name, |end| end.high_writes = 0);
         a.set_settings(Settings {
             baudrate: 19_200,
             ..a.settings()
         })?;
         assert_eq!(
-            mock::update(&a_name, |end| (end.rts, end.dtr)),
-            Some((false, false))
+            mock::update(&a_name, |end| (end.rts, end.dtr, end.high_writes)),
+            Some((false, false, 0))
         );
         Ok(())
     }

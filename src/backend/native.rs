@@ -1,4 +1,6 @@
-use serialport::{ClearBuffer, DataBits, FlowControl, SerialPort};
+use serialport::{ClearBuffer, SerialPort};
+#[cfg(unix)]
+use serialport::{DataBits, FlowControl};
 #[cfg(unix)]
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
 
@@ -6,14 +8,21 @@ use crate::backend::{Backend, Drain};
 use crate::errors::SerialError;
 #[cfg(unix)]
 use crate::runtime::runtime;
-use crate::settings::{Parity, Settings, StopBits};
+use crate::settings::Settings;
+#[cfg(unix)]
+use crate::settings::{Parity, StopBits};
 
 #[cfg(unix)]
 type Port = SerialStream;
 #[cfg(windows)]
 use crate::backend::overlapped::Port;
 
-pub fn open(port: &str, settings: &Settings) -> Result<Box<dyn Backend>, SerialError> {
+pub fn open(
+    port: &str,
+    settings: &Settings,
+    rts: bool,
+    dtr: bool,
+) -> Result<Box<dyn Backend>, SerialError> {
     #[cfg(unix)]
     let mut stream = {
         // The stream registers with the reactor of whichever runtime is current.
@@ -25,12 +34,24 @@ pub fn open(port: &str, settings: &Settings) -> Result<Box<dyn Backend>, SerialE
     };
     #[cfg(windows)]
     let mut stream = Port::open(port).map_err(|err| SerialError::open_failed(port, err.into()))?;
-    stream.configure(settings)?;
+    stream.configure(settings, rts, dtr)?;
     Ok(Box::new(stream))
 }
 
 impl Backend for Port {
-    fn configure(&mut self, settings: &Settings) -> Result<(), SerialError> {
+    #[cfg(windows)]
+    fn configure(&mut self, settings: &Settings, rts: bool, dtr: bool) -> Result<(), SerialError> {
+        platform::configure(self, settings, rts, dtr)
+    }
+
+    // termios settings leave the modem lines alone, so the levels need not be written here.
+    #[cfg(unix)]
+    fn configure(
+        &mut self,
+        settings: &Settings,
+        _rts: bool,
+        _dtr: bool,
+    ) -> Result<(), SerialError> {
         #[cfg(all(unix, not(target_os = "linux")))]
         if matches!(settings.parity, Parity::Mark | Parity::Space) {
             // Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
@@ -52,9 +73,6 @@ impl Backend for Port {
         })?;
         self.set_stop_bits(match settings.stopbits {
             StopBits::One => serialport::StopBits::One,
-            // Windows drivers may reject two stop bits with 1.5 requested, so `platform::apply` sets it directly.
-            #[cfg(windows)]
-            StopBits::OnePointFive => serialport::StopBits::One,
             _ => serialport::StopBits::Two,
         })?;
         // serialport has one flow-control mode, so software flow control is added by `platform::apply`.
@@ -219,7 +237,12 @@ mod platform {
     use std::os::windows::io::AsRawHandle;
 
     use windows_sys::Win32::Devices::Communication::{
-        DCB, GetCommState, MARKPARITY, ONE5STOPBITS, SPACEPARITY, SetCommState,
+        DCB, EVENPARITY, GetCommState, MARKPARITY, NOPARITY, ODDPARITY, ONE5STOPBITS, ONESTOPBIT,
+        SPACEPARITY, SetCommState, TWOSTOPBITS,
+    };
+    use windows_sys::Win32::System::WindowsProgramming::{
+        DTR_CONTROL_DISABLE, DTR_CONTROL_ENABLE, DTR_CONTROL_HANDSHAKE, RTS_CONTROL_DISABLE,
+        RTS_CONTROL_ENABLE, RTS_CONTROL_HANDSHAKE,
     };
 
     use super::Port;
@@ -229,21 +252,25 @@ mod platform {
     // Bit positions of the DCB flags, which windows-sys exposes only as one packed u32.
     const F_BINARY: u32 = 1;
     const F_PARITY: u32 = 1 << 1;
+    const F_OUTX_CTS_FLOW: u32 = 1 << 2;
     const F_OUTX_DSR_FLOW: u32 = 1 << 3;
-    const F_DTR_CONTROL_MASK: u32 = 0b11 << 4;
-    const F_DTR_CONTROL_ENABLE: u32 = 1 << 4;
-    const F_DTR_CONTROL_HANDSHAKE: u32 = 2 << 4;
+    const F_DTR_CONTROL_SHIFT: u32 = 4;
     const F_DSR_SENSITIVITY: u32 = 1 << 6;
     const F_OUT_X: u32 = 1 << 8;
     const F_IN_X: u32 = 1 << 9;
     const F_ERROR_CHAR: u32 = 1 << 10;
     const F_NULL: u32 = 1 << 11;
-    const F_RTS_CONTROL_MASK: u32 = 0b11 << 12;
-    const F_RTS_CONTROL_HANDSHAKE: u32 = 2 << 12;
+    const F_RTS_CONTROL_SHIFT: u32 = 12;
     const F_ABORT_ON_ERROR: u32 = 1 << 14;
 
-    /// Adds binary mode, mark and space parity, 1.5 stop bits, software flow control and DSR/DTR and RTS handshaking.
-    pub fn apply(stream: &Port, settings: &Settings) -> Result<(), SerialError> {
+    /// Applies `settings` and the RTS and DTR levels in a single `SetCommState`, so no line
+    /// changes level while the port is reconfigured.
+    pub fn configure(
+        stream: &Port,
+        settings: &Settings,
+        rts: bool,
+        dtr: bool,
+    ) -> Result<(), SerialError> {
         let handle = stream.as_raw_handle();
         let mut dcb = DCB {
             DCBlength: std::mem::size_of::<DCB>() as u32,
@@ -253,44 +280,64 @@ mod platform {
         if unsafe { GetCommState(handle, &mut dcb) } == 0 {
             return Err(std::io::Error::last_os_error().into());
         }
-        match settings.parity {
-            Parity::Mark => {
-                dcb.Parity = MARKPARITY;
-                dcb._bitfield |= F_PARITY;
-            }
-            Parity::Space => {
-                dcb.Parity = SPACEPARITY;
-                dcb._bitfield |= F_PARITY;
-            }
-            _ => {}
+        // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): DCB field and flag choices.
+        dcb.BaudRate = settings.baudrate;
+        dcb.ByteSize = settings.bytesize;
+        dcb.Parity = match settings.parity {
+            Parity::None => NOPARITY,
+            Parity::Even => EVENPARITY,
+            Parity::Odd => ODDPARITY,
+            Parity::Mark => MARKPARITY,
+            Parity::Space => SPACEPARITY,
+        };
+        dcb.StopBits = match settings.stopbits {
+            StopBits::One => ONESTOPBIT,
+            StopBits::OnePointFive => ONE5STOPBITS,
+            StopBits::Two => TWOSTOPBITS,
+        };
+        let dtr_control = if settings.dsrdtr {
+            DTR_CONTROL_HANDSHAKE
+        } else if dtr {
+            DTR_CONTROL_ENABLE
+        } else {
+            DTR_CONTROL_DISABLE
+        };
+        let rts_control = if settings.rtscts {
+            RTS_CONTROL_HANDSHAKE
+        } else if rts {
+            RTS_CONTROL_ENABLE
+        } else {
+            RTS_CONTROL_DISABLE
+        };
+        let mut flags =
+            F_BINARY | dtr_control << F_DTR_CONTROL_SHIFT | rts_control << F_RTS_CONTROL_SHIFT;
+        if settings.parity != Parity::None {
+            flags |= F_PARITY;
         }
-        if settings.stopbits == StopBits::OnePointFive {
-            dcb.StopBits = ONE5STOPBITS;
+        if settings.rtscts {
+            flags |= F_OUTX_CTS_FLOW;
         }
-        // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): DCB flag choices.
-        dcb._bitfield &= !(F_OUTX_DSR_FLOW
-            | F_DTR_CONTROL_MASK
+        if settings.dsrdtr {
+            flags |= F_OUTX_DSR_FLOW;
+        }
+        if settings.xonxoff {
+            flags |= F_OUT_X | F_IN_X;
+        }
+        let owned = F_BINARY
+            | F_PARITY
+            | F_OUTX_CTS_FLOW
+            | F_OUTX_DSR_FLOW
+            | 0b11 << F_DTR_CONTROL_SHIFT
             | F_DSR_SENSITIVITY
             | F_OUT_X
             | F_IN_X
             | F_ERROR_CHAR
             | F_NULL
-            | F_ABORT_ON_ERROR);
-        dcb._bitfield |= F_BINARY;
+            | 0b11 << F_RTS_CONTROL_SHIFT
+            | F_ABORT_ON_ERROR;
+        dcb._bitfield = dcb._bitfield & !owned | flags;
         dcb.XonChar = 0x11;
         dcb.XoffChar = 0x13;
-        dcb._bitfield |= if settings.dsrdtr {
-            F_OUTX_DSR_FLOW | F_DTR_CONTROL_HANDSHAKE
-        } else {
-            F_DTR_CONTROL_ENABLE
-        };
-        if settings.xonxoff {
-            dcb._bitfield |= F_OUT_X | F_IN_X;
-        }
-        if settings.rtscts {
-            dcb._bitfield &= !F_RTS_CONTROL_MASK;
-            dcb._bitfield |= F_RTS_CONTROL_HANDSHAKE;
-        }
         // SAFETY: as above.
         if unsafe { SetCommState(handle, &dcb) } == 0 {
             return Err(std::io::Error::last_os_error().into());
@@ -318,8 +365,8 @@ mod tests {
             stopbits: StopBits::OnePointFive,
             ..Settings::default()
         };
-        a.configure(&settings)?;
-        b.configure(&settings)?;
+        a.configure(&settings, true, true)?;
+        b.configure(&settings, true, true)?;
         a.write_all(b"ping").await?;
         let mut buf = [0u8; 4];
         b.read_exact(&mut buf).await?;
@@ -372,7 +419,10 @@ mod tests {
             parity: Parity::Mark,
             ..Settings::default()
         };
-        assert!(matches!(a.configure(&settings), Err(SerialError::Value(_))));
+        assert!(matches!(
+            a.configure(&settings, true, true),
+            Err(SerialError::Value(_))
+        ));
         Ok(())
     }
 }

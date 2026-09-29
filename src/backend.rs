@@ -24,7 +24,8 @@ pub enum Drain {
 
 /// An open port: async byte I/O plus the control calls pyserial exposes.
 pub trait Backend: AsyncRead + AsyncWrite + Unpin + Send + 'static {
-    fn configure(&mut self, settings: &Settings) -> Result<(), SerialError>;
+    /// Applies `settings`, leaving RTS and DTR at the given levels where the backend drives them.
+    fn configure(&mut self, settings: &Settings, rts: bool, dtr: bool) -> Result<(), SerialError>;
     fn set_rts(&mut self, level: bool) -> Result<(), SerialError>;
     fn set_dtr(&mut self, level: bool) -> Result<(), SerialError>;
     fn cts(&mut self) -> Result<bool, SerialError>;
@@ -50,12 +51,17 @@ pub trait Backend: AsyncRead + AsyncWrite + Unpin + Send + 'static {
     }
 }
 
-/// Opens `port` and applies `settings`.
-pub fn open(port: &str, settings: &Settings) -> Result<Box<dyn Backend>, SerialError> {
+/// Opens `port` and applies `settings` and the RTS and DTR levels.
+pub fn open(
+    port: &str,
+    settings: &Settings,
+    rts: bool,
+    dtr: bool,
+) -> Result<Box<dyn Backend>, SerialError> {
     #[cfg(feature = "test-backend")]
     if let Some(mut mock) = mock::lookup(port) {
-        mock.configure(settings)?;
+        mock.configure(settings, rts, dtr)?;
         return Ok(Box::new(mock));
     }
-    native::open(port, settings)
+    native::open(port, settings, rts, dtr)
 }

@@ -118,3 +118,35 @@ def test_a_non_blocking_write_held_by_flow_control_is_sent_later(
             assert a.write(b"x" * 100) == 100
             b.rts = True
             assert b.read(100) == b"x" * 100
+
+
+def test_reconfiguring_keeps_lowered_lines_low(real_pair: tuple[str, str]) -> None:
+    """Keep lowered RTS and DTR low through repeated baud rate and timeout changes."""
+    a = Serial()
+    a.port = real_pair[0]
+    a.dtr = False
+    a.rts = False
+    seen_high: list[str] = []
+    done = threading.Event()
+    with Serial(real_pair[1]) as b:
+        a.open()
+
+        def poll() -> None:
+            while not done.is_set():
+                if b.dsr:
+                    seen_high.append("dsr")
+                if b.cts:
+                    seen_high.append("cts")
+
+        watcher = threading.Thread(target=poll)
+        watcher.start()
+        try:
+            for i in range(200):
+                a.baudrate = 19200 if i % 2 else 9600
+            for i in range(200):
+                a.timeout = 0.5 if i % 2 else 1.0
+        finally:
+            done.set()
+            watcher.join()
+            a.close()
+    assert seen_high == []

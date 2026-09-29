@@ -19,7 +19,10 @@ pub struct EndState {
     pub break_on: bool,
     pub write_blocked: bool,
     pub baudrate: u32,
+    /// Times `configure` was called.
     pub configure_calls: usize,
+    /// Times RTS or DTR was written high.
+    pub high_writes: usize,
     write_waker: Option<Waker>,
 }
 
@@ -32,8 +35,21 @@ impl Default for EndState {
             write_blocked: false,
             baudrate: 0,
             configure_calls: 0,
+            high_writes: 0,
             write_waker: None,
         }
+    }
+}
+
+impl EndState {
+    fn set_rts(&mut self, level: bool) {
+        self.rts = level;
+        self.high_writes += usize::from(level);
+    }
+
+    fn set_dtr(&mut self, level: bool) {
+        self.dtr = level;
+        self.high_writes += usize::from(level);
     }
 }
 
@@ -147,24 +163,23 @@ impl AsyncWrite for MockPort {
 }
 
 impl Backend for MockPort {
-    fn configure(&mut self, settings: &Settings) -> Result<(), SerialError> {
+    fn configure(&mut self, settings: &Settings, rts: bool, dtr: bool) -> Result<(), SerialError> {
         let mut state = lock(&self.pair);
         let end = &mut state.ends[self.side];
         end.baudrate = settings.baudrate;
         end.configure_calls += 1;
-        // Reconfiguring resets the lines on some real backends; callers must restore them.
-        end.rts = true;
-        end.dtr = true;
+        end.set_rts(rts);
+        end.set_dtr(dtr);
         Ok(())
     }
 
     fn set_rts(&mut self, level: bool) -> Result<(), SerialError> {
-        lock(&self.pair).ends[self.side].rts = level;
+        lock(&self.pair).ends[self.side].set_rts(level);
         Ok(())
     }
 
     fn set_dtr(&mut self, level: bool) -> Result<(), SerialError> {
-        lock(&self.pair).ends[self.side].dtr = level;
+        lock(&self.pair).ends[self.side].set_dtr(level);
         Ok(())
     }
 
