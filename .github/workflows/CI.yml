@@ -103,6 +103,15 @@ jobs:
             target: ppc64le
     steps:
       - uses: actions/checkout@v6
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          # PEP 440 pre-release (1.2.0rc1) -> semver (1.2.0-rc.1); maturin maps it back.
+          v="$(echo "${GITHUB_REF_NAME#v}" | sed -E 's/(a|b|rc)([0-9]+)$/-\1.\2/')"
+          sed -i.bak -E '/^\[package\]/,/^\[/ s/^version = ".*"/version = "'"$v"'"/' Cargo.toml
+          rm Cargo.toml.bak
+          cargo update --workspace
       - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
@@ -134,6 +143,15 @@ jobs:
             target: armv7
     steps:
       - uses: actions/checkout@v6
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          # PEP 440 pre-release (1.2.0rc1) -> semver (1.2.0-rc.1); maturin maps it back.
+          v="$(echo "${GITHUB_REF_NAME#v}" | sed -E 's/(a|b|rc)([0-9]+)$/-\1.\2/')"
+          sed -i.bak -E '/^\[package\]/,/^\[/ s/^version = ".*"/version = "'"$v"'"/' Cargo.toml
+          rm Cargo.toml.bak
+          cargo update --workspace
       - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
@@ -166,6 +184,15 @@ jobs:
             python_arch: arm64
     steps:
       - uses: actions/checkout@v6
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          # PEP 440 pre-release (1.2.0rc1) -> semver (1.2.0-rc.1); maturin maps it back.
+          v="$(echo "${GITHUB_REF_NAME#v}" | sed -E 's/(a|b|rc)([0-9]+)$/-\1.\2/')"
+          sed -i.bak -E '/^\[package\]/,/^\[/ s/^version = ".*"/version = "'"$v"'"/' Cargo.toml
+          rm Cargo.toml.bak
+          cargo update --workspace
       - uses: actions/setup-python@v6
         id: py311
         with:
@@ -199,6 +226,15 @@ jobs:
             target: aarch64
     steps:
       - uses: actions/checkout@v6
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          # PEP 440 pre-release (1.2.0rc1) -> semver (1.2.0-rc.1); maturin maps it back.
+          v="$(echo "${GITHUB_REF_NAME#v}" | sed -E 's/(a|b|rc)([0-9]+)$/-\1.\2/')"
+          sed -i.bak -E '/^\[package\]/,/^\[/ s/^version = ".*"/version = "'"$v"'"/' Cargo.toml
+          rm Cargo.toml.bak
+          cargo update --workspace
       - uses: actions/setup-python@v6
         id: py311
         with:
@@ -223,6 +259,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          # PEP 440 pre-release (1.2.0rc1) -> semver (1.2.0-rc.1); maturin maps it back.
+          v="$(echo "${GITHUB_REF_NAME#v}" | sed -E 's/(a|b|rc)([0-9]+)$/-\1.\2/')"
+          sed -i.bak -E '/^\[package\]/,/^\[/ s/^version = ".*"/version = "'"$v"'"/' Cargo.toml
+          rm Cargo.toml.bak
+          cargo update --workspace
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:

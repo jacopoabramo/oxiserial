@@ -27,6 +27,7 @@ that can be waited on (`.wait()`) or awaited.
 - Blocking calls release the GIL. Shared state is behind a `Mutex` or
   atomics, since the module supports free-threaded CPython.
 - CPython 3.11 or newer. Wheels are `abi3-py311` plus `cp314t`.
+- Releases are cut by pushing a `vX.Y.Z` tag; CI sets the version from it.
 - Dependencies go through `uv add` and `cargo add`, never by editing
   `pyproject.toml` or `Cargo.toml` by hand.
 
