@@ -10,18 +10,48 @@ use crate::settings::{Parity, Settings, StopBits};
 pub fn open(port: &str, settings: &Settings) -> Result<Box<dyn Backend>, SerialError> {
     // The stream registers with the reactor of whichever runtime is current.
     let _context = runtime()?.enter();
-    let mut stream = tokio_serial::new(port, settings.baudrate)
+    let builder = tokio_serial::new(port, settings.baudrate);
+    #[cfg(unix)]
+    let builder = builder.exclusive(settings.exclusive == Some(true));
+    let mut stream = builder
         .open_native_async()
         .map_err(|err| SerialError::open_failed(port, err))?;
-    #[cfg(unix)]
-    stream.set_exclusive(settings.exclusive == Some(true))?;
     stream.configure(settings)?;
     Ok(Box::new(stream))
 }
 
+#[cfg(not(target_os = "macos"))]
+fn set_baud_rate(stream: &mut SerialStream, baudrate: u32) -> Result<(), SerialError> {
+    Ok(SerialPort::set_baud_rate(stream, baudrate)?)
+}
+
+/// serialport sets every rate through an ioctl that ptys reject; termios handles the standard ones.
+#[cfg(target_os = "macos")]
+fn set_baud_rate(stream: &mut SerialStream, baudrate: u32) -> Result<(), SerialError> {
+    use std::os::fd::{AsRawFd, BorrowedFd};
+
+    use nix::sys::termios::{BaudRate, SetArg, cfsetspeed, tcgetattr, tcsetattr};
+
+    if BaudRate::try_from(baudrate as libc::speed_t).is_err() {
+        return Ok(SerialPort::set_baud_rate(stream, baudrate)?);
+    }
+    // SAFETY: the descriptor belongs to `stream`, which outlives this call.
+    let fd = unsafe { BorrowedFd::borrow_raw(stream.as_raw_fd()) };
+    let mut termios = tcgetattr(fd).map_err(std::io::Error::from)?;
+    cfsetspeed(&mut termios, baudrate).map_err(std::io::Error::from)?;
+    tcsetattr(fd, SetArg::TCSANOW, &termios).map_err(std::io::Error::from)?;
+    Ok(())
+}
+
 impl Backend for SerialStream {
     fn configure(&mut self, settings: &Settings) -> Result<(), SerialError> {
-        self.set_baud_rate(settings.baudrate)?;
+        #[cfg(all(unix, not(target_os = "linux")))]
+        if matches!(settings.parity, Parity::Mark | Parity::Space) {
+            return Err(SerialError::Value(format!(
+                "Invalid parity: '{}'",
+                settings.parity.name()
+            )));
+        }
         self.set_data_bits(match settings.bytesize {
             5 => DataBits::Five,
             6 => DataBits::Six,
@@ -35,17 +65,19 @@ impl Backend for SerialStream {
         })?;
         self.set_stop_bits(match settings.stopbits {
             StopBits::One => tokio_serial::StopBits::One,
+            // Windows drivers may reject two stop bits with 1.5 requested, so `platform::apply` sets it directly.
+            #[cfg(windows)]
+            StopBits::OnePointFive => tokio_serial::StopBits::One,
             _ => tokio_serial::StopBits::Two,
         })?;
-        // ponytail: serialport has one flow-control mode, so xonxoff together with rtscts keeps only hardware flow control
+        // serialport has one flow-control mode, so software flow control is added by `platform::apply`.
         self.set_flow_control(if settings.rtscts {
             FlowControl::Hardware
-        } else if settings.xonxoff {
-            FlowControl::Software
         } else {
             FlowControl::None
         })?;
-        platform::apply(self, settings)
+        platform::apply(self, settings)?;
+        set_baud_rate(self, settings.baudrate)
     }
 
     fn set_rts(&mut self, level: bool) -> Result<(), SerialError> {
@@ -110,24 +142,41 @@ impl Backend for SerialStream {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 mod platform {
     use std::os::fd::{AsRawFd, BorrowedFd};
 
-    use nix::sys::termios::{ControlFlags, SetArg, tcgetattr, tcsetattr};
+    use nix::sys::termios::{InputFlags, SetArg, tcgetattr, tcsetattr};
     use tokio_serial::SerialStream;
 
     use crate::errors::SerialError;
-    use crate::settings::{Parity, Settings};
+    use crate::settings::Settings;
 
-    /// Adds mark and space parity, which serialport does not offer.
+    /// Applies what serialport does not: raw parity errors, software flow control and, on Linux, mark and space parity.
     pub fn apply(stream: &SerialStream, settings: &Settings) -> Result<(), SerialError> {
         // SAFETY: the descriptor belongs to `stream`, which outlives this call.
         let fd = unsafe { BorrowedFd::borrow_raw(stream.as_raw_fd()) };
         let mut termios = tcgetattr(fd).map_err(std::io::Error::from)?;
-        let flags = &mut termios.control_flags;
+        termios
+            .input_flags
+            .remove(InputFlags::INPCK | InputFlags::ISTRIP);
+        termios
+            .input_flags
+            .set(InputFlags::IXON | InputFlags::IXOFF, settings.xonxoff);
+        #[cfg(target_os = "linux")]
+        mark_space(&mut termios.control_flags, settings.parity);
+        tcsetattr(fd, SetArg::TCSANOW, &termios).map_err(std::io::Error::from)?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn mark_space(flags: &mut nix::sys::termios::ControlFlags, parity: crate::settings::Parity) {
+        use nix::sys::termios::ControlFlags;
+
+        use crate::settings::Parity;
+
         flags.remove(ControlFlags::CMSPAR);
-        match settings.parity {
+        match parity {
             Parity::Mark => {
                 flags.insert(ControlFlags::PARENB | ControlFlags::CMSPAR | ControlFlags::PARODD);
             }
@@ -136,26 +185,6 @@ mod platform {
                 flags.remove(ControlFlags::PARODD);
             }
             _ => {}
-        }
-        tcsetattr(fd, SetArg::TCSANOW, &termios).map_err(std::io::Error::from)?;
-        Ok(())
-    }
-}
-
-#[cfg(all(unix, not(target_os = "linux")))]
-mod platform {
-    use tokio_serial::SerialStream;
-
-    use crate::errors::SerialError;
-    use crate::settings::{Parity, Settings};
-
-    pub fn apply(_stream: &SerialStream, settings: &Settings) -> Result<(), SerialError> {
-        match settings.parity {
-            Parity::Mark | Parity::Space => Err(SerialError::Value(format!(
-                "Invalid parity: '{}'",
-                settings.parity.name()
-            ))),
-            _ => Ok(()),
         }
     }
 }
@@ -178,9 +207,12 @@ mod platform {
     const F_DTR_CONTROL_MASK: u32 = 0b11 << 4;
     const F_DTR_CONTROL_ENABLE: u32 = 1 << 4;
     const F_DTR_CONTROL_HANDSHAKE: u32 = 2 << 4;
+    const F_OUT_X: u32 = 1 << 8;
+    const F_IN_X: u32 = 1 << 9;
+    const F_RTS_CONTROL_MASK: u32 = 0b11 << 12;
+    const F_RTS_CONTROL_HANDSHAKE: u32 = 2 << 12;
 
-    /// Adds mark and space parity, 1.5 stop bits and DSR/DTR flow control.
-    // ponytail: turning dsrdtr off sets DTR high until the next dtr assignment; pass the DTR state in if that matters
+    /// Adds mark and space parity, 1.5 stop bits, software flow control and DSR/DTR and RTS handshaking.
     pub fn apply(stream: &SerialStream, settings: &Settings) -> Result<(), SerialError> {
         let handle = stream.as_raw_handle();
         // SAFETY: DCB is plain data; zeroed is a valid value before GetCommState fills it.
@@ -204,12 +236,19 @@ mod platform {
         if settings.stopbits == StopBits::OnePointFive {
             dcb.StopBits = ONE5STOPBITS;
         }
-        dcb._bitfield &= !(F_OUTX_DSR_FLOW | F_DTR_CONTROL_MASK);
+        dcb._bitfield &= !(F_OUTX_DSR_FLOW | F_DTR_CONTROL_MASK | F_OUT_X | F_IN_X);
         dcb._bitfield |= if settings.dsrdtr {
             F_OUTX_DSR_FLOW | F_DTR_CONTROL_HANDSHAKE
         } else {
             F_DTR_CONTROL_ENABLE
         };
+        if settings.xonxoff {
+            dcb._bitfield |= F_OUT_X | F_IN_X;
+        }
+        if settings.rtscts {
+            dcb._bitfield &= !F_RTS_CONTROL_MASK;
+            dcb._bitfield |= F_RTS_CONTROL_HANDSHAKE;
+        }
         // SAFETY: as above.
         if unsafe { SetCommState(handle, &dcb) } == 0 {
             return Err(std::io::Error::last_os_error().into());
@@ -225,6 +264,10 @@ mod tests {
 
     use super::*;
 
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "serialport sets termios through an ioctl that macOS ptys reject"
+    )]
     #[tokio::test]
     async fn configured_pty_pair_carries_data() {
         let (mut a, mut b) = SerialStream::pair().unwrap();
@@ -239,6 +282,38 @@ mod tests {
         let mut buf = [0u8; 4];
         b.read_exact(&mut buf).await.unwrap();
         assert_eq!(&buf, b"ping");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mark_and_space_parity_set_the_termios_bits_on_linux() {
+        use std::os::fd::{AsRawFd, BorrowedFd};
+
+        use nix::sys::termios::{ControlFlags, tcgetattr};
+
+        let (mut a, _b) = SerialStream::pair().unwrap();
+        // SAFETY: the descriptor belongs to `a`, which outlives this borrow.
+        let fd = unsafe { BorrowedFd::borrow_raw(a.as_raw_fd()) };
+        let flags = || tcgetattr(fd).unwrap().control_flags;
+
+        a.configure(&Settings {
+            parity: Parity::Mark,
+            ..Settings::default()
+        })
+        .unwrap();
+        let mark = ControlFlags::PARENB | ControlFlags::CMSPAR | ControlFlags::PARODD;
+        assert!(flags().contains(mark));
+
+        a.configure(&Settings {
+            parity: Parity::Space,
+            ..Settings::default()
+        })
+        .unwrap();
+        assert!(flags().contains(ControlFlags::PARENB | ControlFlags::CMSPAR));
+        assert!(!flags().contains(ControlFlags::PARODD));
+
+        a.configure(&Settings::default()).unwrap();
+        assert!(!flags().intersects(ControlFlags::CMSPAR | ControlFlags::PARENB));
     }
 
     #[cfg(target_os = "macos")]
