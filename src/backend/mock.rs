@@ -221,9 +221,26 @@ mod tests {
         assert_eq!(&buf, b"hi");
 
         a.set_rts(false).unwrap();
-        a.set_dtr(true).unwrap();
+        a.set_dtr(false).unwrap();
         assert!(!b.cts().unwrap());
-        assert!(b.dsr().unwrap() && b.cd().unwrap());
+        assert!(!b.dsr().unwrap() && !b.cd().unwrap());
+        assert!(a.dsr().unwrap() && a.cd().unwrap());
+    }
+
+    #[tokio::test]
+    async fn pending_read_wakes_when_peer_writes() {
+        let (a_name, b_name) = pair();
+        let mut a = lookup(&a_name).unwrap();
+        let mut b = lookup(&b_name).unwrap();
+        let read = tokio::spawn(async move {
+            let mut buf = [0u8; 2];
+            b.read_exact(&mut buf).await.unwrap();
+            buf
+        });
+        tokio::task::yield_now().await;
+        assert!(!read.is_finished());
+        a.write_all(b"ok").await.unwrap();
+        assert_eq!(&read.await.unwrap(), b"ok");
     }
 
     #[tokio::test]
