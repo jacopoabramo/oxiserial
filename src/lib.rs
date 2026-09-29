@@ -1,3 +1,4 @@
+mod aio;
 mod backend;
 mod errors;
 mod future;
@@ -79,6 +80,7 @@ fn _oxiserial(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     let aio_module = PyModule::new(py, "oxiserial.aio")?;
     aio_module.add_class::<future::OpFuture>()?;
+    aio_module.add_class::<aio::AioSerial>()?;
     add_submodule(m, "aio", &aio_module)?;
 
     let tools_module = PyModule::new(py, "oxiserial.tools")?;

@@ -1,7 +1,11 @@
 from collections.abc import Generator
-from typing import Any, Generic, TypeVar, final
+from typing import Any, Generic, Self, TypeVar, final
 
-__all__ = ["Future"]
+from typing_extensions import Buffer
+
+from oxiserial import SerialBase
+
+__all__ = ["Future", "Serial"]
 
 _T_co = TypeVar("_T_co", covariant=True)
 
@@ -13,3 +17,31 @@ class Future(Generic[_T_co]):
     def result(self) -> _T_co: ...
     def __await__(self) -> Generator[Any, None, _T_co]: ...
     def __class_getitem__(cls, key: Any) -> Any: ...
+
+class Serial(SerialBase):
+    def __init__(
+        self,
+        port: str | None = None,
+        baudrate: int = 9600,
+        bytesize: int = 8,
+        parity: str = "N",
+        stopbits: float = 1.0,
+        timeout: float | None = None,
+        xonxoff: bool = False,
+        rtscts: bool = False,
+        write_timeout: float | None = None,
+        dsrdtr: bool | None = False,
+        inter_byte_timeout: float | None = None,
+        exclusive: bool | None = None,
+    ) -> None: ...
+    def read(self, size: int = 1) -> Future[bytes]: ...
+    def read_until(
+        self, expected: bytes = b"\n", size: int | None = None
+    ) -> Future[bytes]: ...
+    def readline(self, size: int = -1) -> Future[bytes]: ...
+    def readlines(self, hint: int = -1) -> Future[list[bytes]]: ...
+    def write(self, data: Buffer | str) -> Future[int]: ...
+    def flush(self) -> Future[None]: ...
+    def send_break(self, duration: float = 0.25) -> Future[None]: ...
+    def __aenter__(self) -> Future[Self]: ...
+    def __aexit__(self, *args: object) -> Future[None]: ...

@@ -175,6 +175,17 @@ impl SerialBase {
         })
     }
 
+    /// Opens the port when one is set and it is closed.
+    pub(crate) fn enter(&self, py: Python<'_>) -> PyResult<()> {
+        self.detached(py, |core| {
+            if core.port().is_some() && !core.is_open() {
+                core.open()
+            } else {
+                Ok(())
+            }
+        })
+    }
+
     fn detached<R: Send>(
         &self,
         py: Python<'_>,
@@ -603,14 +614,7 @@ impl Serial {
     }
 
     fn __enter__<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, Self>> {
-        let core = Self::core(slf);
-        slf.py().detach(|| {
-            if core.port().is_some() && !core.is_open() {
-                core.open()
-            } else {
-                Ok(())
-            }
-        })?;
+        slf.as_super().get().enter(slf.py())?;
         Ok(slf.clone())
     }
 
