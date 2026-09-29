@@ -224,13 +224,42 @@ impl PortCore {
     }
 
     pub fn set_rts(&self, level: bool) -> Result<(), SerialError> {
-        lock(&self.state).rts = level;
-        self.if_open(|port| port.set_rts(level))
+        self.set_line(
+            |state| {
+                state.rts = level;
+                state.settings.rtscts
+            },
+            |port| port.set_rts(level),
+        )
     }
 
     pub fn set_dtr(&self, level: bool) -> Result<(), SerialError> {
-        lock(&self.state).dtr = level;
-        self.if_open(|port| port.set_dtr(level))
+        self.set_line(
+            |state| {
+                state.dtr = level;
+                state.settings.dsrdtr
+            },
+            |port| port.set_dtr(level),
+        )
+    }
+
+    /// Stores a line level with `store`, which returns whether flow control drives the line,
+    /// and writes it with `write` only when it does not.
+    ///
+    /// A line under flow control belongs to the driver, which may reject writes to it; the
+    /// stored level is applied by the configure that turns flow control off.
+    fn set_line(
+        &self,
+        store: impl FnOnce(&mut State) -> bool,
+        write: impl FnOnce(&mut dyn Backend) -> Result<(), SerialError>,
+    ) -> Result<(), SerialError> {
+        // Taken first, as in `update_settings`, so flow control cannot change before the write.
+        let mut slot = lock(&self.backend);
+        let driven = store(&mut lock(&self.state));
+        match slot.as_mut() {
+            Some(port) if !driven => write(port.as_mut()),
+            _ => Ok(()),
+        }
     }
 
     pub fn set_break_condition(&self, on: bool) -> Result<(), SerialError> {
@@ -597,6 +626,30 @@ mod tests {
         assert_eq!(
             mock::update(&a_name, |end| (end.rts, end.dtr, end.high_writes)),
             Some((false, false, 0))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn lines_under_flow_control_are_stored_and_applied_when_it_is_turned_off()
+    -> Result<(), SerialError> {
+        let (a, _b, a_name) = open_pair(|s| {
+            s.rtscts = true;
+            s.dsrdtr = true;
+        })?;
+        let lines = || mock::update(&a_name, |end| (end.line_writes, end.rts, end.dtr));
+        let before = lines();
+        a.set_rts(false)?;
+        a.set_dtr(false)?;
+        assert!(!a.rts() && !a.dtr());
+        assert_eq!(lines(), before);
+        a.update_settings(|s| {
+            s.rtscts = false;
+            s.dsrdtr = false;
+        })?;
+        assert_eq!(
+            mock::update(&a_name, |end| (end.rts, end.dtr)),
+            Some((false, false))
         );
         Ok(())
     }

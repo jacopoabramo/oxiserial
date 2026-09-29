@@ -21,6 +21,8 @@ pub struct EndState {
     pub baudrate: u32,
     /// Times `configure` was called.
     pub configure_calls: usize,
+    /// Times RTS or DTR was written.
+    pub line_writes: usize,
     /// Times RTS or DTR was written high.
     pub high_writes: usize,
     write_waker: Option<Waker>,
@@ -35,6 +37,7 @@ impl Default for EndState {
             write_blocked: false,
             baudrate: 0,
             configure_calls: 0,
+            line_writes: 0,
             high_writes: 0,
             write_waker: None,
         }
@@ -44,11 +47,13 @@ impl Default for EndState {
 impl EndState {
     fn set_rts(&mut self, level: bool) {
         self.rts = level;
+        self.line_writes += 1;
         self.high_writes += usize::from(level);
     }
 
     fn set_dtr(&mut self, level: bool) {
         self.dtr = level;
+        self.line_writes += 1;
         self.high_writes += usize::from(level);
     }
 }

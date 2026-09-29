@@ -180,12 +180,20 @@ class SerialBase:
     def exclusive(self, value: bool | None) -> None: ...
     @property
     def rts(self) -> bool:
-        """State of the RTS line."""
+        """State of the RTS line.
+
+        While `rtscts` is on, flow control drives the line: an assigned level is
+        stored and applied when `rtscts` is turned off.
+        """
     @rts.setter
     def rts(self, value: bool) -> None: ...
     @property
     def dtr(self) -> bool:
-        """State of the DTR line."""
+        """State of the DTR line.
+
+        While `dsrdtr` is on, flow control drives the line: an assigned level is
+        stored and applied when `dsrdtr` is turned off.
+        """
     @dtr.setter
     def dtr(self, value: bool) -> None: ...
     @property

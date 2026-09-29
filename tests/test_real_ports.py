@@ -150,3 +150,18 @@ def test_reconfiguring_keeps_lowered_lines_low(modem_pair: tuple[str, str]) -> N
             watcher.join()
             a.close()
     assert seen_high == []
+
+
+def test_lines_under_flow_control_apply_when_it_is_turned_off(
+    modem_pair: tuple[str, str],
+) -> None:
+    """Store RTS and DTR set under flow control and apply them once it is off."""
+    with (
+        Serial(modem_pair[1]) as b,
+        Serial(modem_pair[0], rtscts=True, dsrdtr=True) as a,
+    ):
+        a.rts = False
+        a.dtr = False
+        a.rtscts = False
+        a.dsrdtr = False
+        assert not b.cts and not b.dsr
