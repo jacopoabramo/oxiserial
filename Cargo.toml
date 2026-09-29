@@ -22,7 +22,7 @@ nix = { version = "0.31", features = ["term"] }
 windows-sys = { version = "0.61", features = ["Win32_Devices_Communication", "Win32_Foundation"] }
 
 [dev-dependencies]
-tokio = { version = "1.53.1", features = ["test-util", "macros", "rt"] }
+tokio = { version = "1.53.1", features = ["test-util", "macros", "rt", "io-util"] }
 
 [features]
 test-backend = []
