@@ -37,11 +37,22 @@ fn mock_state<'py>(py: Python<'py>, port: &str) -> PyResult<Bound<'py, PyDict>> 
 
 #[pyfunction]
 fn delayed(value: &[u8], delay: f64) -> PyResult<OpFuture> {
+    let delay = Duration::try_from_secs_f64(delay)
+        .map_err(|err| PyValueError::new_err(format!("invalid delay: {err}")))?;
     let value = value.to_vec();
     Ok(OpFuture::spawn(async move {
-        tokio::time::sleep(Duration::from_secs_f64(delay)).await;
+        tokio::time::sleep(delay).await;
         Ok::<_, SerialError>(Outcome::Bytes(value))
     })?)
+}
+
+#[pyfunction]
+#[allow(
+    clippy::panic,
+    reason = "drives the test of the guard that resolves panicked operations"
+)]
+fn panic_in_task() -> PyResult<OpFuture> {
+    Ok(OpFuture::spawn(async { panic!("panic_in_task") })?)
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -49,5 +60,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mock_block_writes, m)?)?;
     m.add_function(wrap_pyfunction!(mock_state, m)?)?;
     m.add_function(wrap_pyfunction!(delayed, m)?)?;
+    m.add_function(wrap_pyfunction!(panic_in_task, m)?)?;
     Ok(())
 }

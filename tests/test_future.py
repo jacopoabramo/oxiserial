@@ -67,7 +67,7 @@ def test_cancelled_await_cancels_the_operation(run: Runner) -> None:
 
 
 def test_completion_after_the_loop_closed(capfd: pytest.CaptureFixture[str]) -> None:
-    future = _testing.delayed(b"x", 0.1)
+    future = _testing.delayed(b"x", 0.5)
 
     async def waiter() -> bytes:
         return await future
@@ -83,10 +83,16 @@ def test_completion_after_the_loop_closed(capfd: pytest.CaptureFixture[str]) -> 
 
 
 def test_panicking_operation_raises() -> None:
-    future = _testing.delayed(b"x", -1)
+    future = _testing.panic_in_task()
     with pytest.raises(SerialException, match="panicked"):
         future.wait(timeout=5)
     assert future.done()
+
+
+@pytest.mark.parametrize("delay", [-1, float("nan"), float("inf")])
+def test_delayed_rejects_negative_delay(delay: float) -> None:
+    with pytest.raises(ValueError):
+        _testing.delayed(b"x", delay)
 
 
 def test_cancel_always_reports_cancelled() -> None:
