@@ -96,3 +96,14 @@ def test_a_cancelled_read_leaves_later_data(
             return await asyncio.wait_for(b.read(3), 2)
 
     assert run(main()) == b"abc"
+
+
+def test_a_non_blocking_write_held_by_flow_control_is_sent_later(
+    real_pair: tuple[str, str],
+) -> None:
+    with Serial(real_pair[1], timeout=2) as b:
+        b.rts = False
+        with Serial(real_pair[0], rtscts=True, write_timeout=0) as a:
+            assert a.write(b"x" * 100) == 100
+            b.rts = True
+            assert b.read(100) == b"x" * 100

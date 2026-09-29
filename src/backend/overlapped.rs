@@ -207,6 +207,8 @@ pub struct Port {
     readiness: Op,
     read: Op,
     write: Op,
+    // The pending write was handed to the driver by a non-blocking `write` that already returned.
+    write_detached: bool,
     com: COMPort,
 }
 
@@ -258,6 +260,7 @@ impl Port {
             readiness: Op::new(handle)?,
             read: Op::new(handle)?,
             write: Op::new(handle)?,
+            write_detached: false,
             com,
         })
     }
@@ -305,9 +308,37 @@ impl Port {
         Ok(true)
     }
 
-    /// Cancels a write still in progress and returns the bytes it sent.
+    /// Cancels a write still in progress for its caller and returns the bytes it sent.
     pub fn abort_write(&mut self) -> io::Result<usize> {
+        if self.write_detached {
+            return Ok(0);
+        }
         self.write.cancel()
+    }
+
+    /// Leaves the pending write to finish in the driver and returns the bytes it was given.
+    pub fn detach_write(&mut self) -> usize {
+        if !self.write.pending || self.write_detached {
+            return 0;
+        }
+        self.write_detached = true;
+        self.write.buffer.len()
+    }
+
+    /// Waits for the pending write, if any, and returns its byte count.
+    fn poll_write_done(&mut self, cx: &Context<'_>) -> Poll<io::Result<usize>> {
+        if !self.write.pending {
+            return Poll::Ready(Ok(0));
+        }
+        // The waker is stored before the completion check, so a completion in between still wakes the task.
+        self.write.register(cx)?;
+        match self.write.result(false) {
+            Some(result) => {
+                self.write_detached = false;
+                Poll::Ready(result)
+            }
+            None => Poll::Pending,
+        }
     }
 }
 
@@ -368,9 +399,13 @@ impl AsyncWrite for Port {
         data: &[u8],
     ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
+        if this.write_detached {
+            // An earlier non-blocking write finishes first; a failure of it is this call's error.
+            std::task::ready!(this.poll_write_done(cx))?;
+        }
         let handle = this.handle();
         let op = &mut this.write;
-        // A pending write is the one the caller is retrying with the same data.
+        // A pending write that is not detached is the one the caller is retrying with the same data.
         if !op.pending {
             if data.is_empty() {
                 return Poll::Ready(Ok(0));
@@ -395,16 +430,12 @@ impl AsyncWrite for Port {
                 return Poll::Ready(result);
             }
         }
-        // The waker is stored before the completion check, so a completion in between still wakes the task.
-        op.register(cx)?;
-        match op.result(false) {
-            Some(result) => Poll::Ready(result),
-            None => Poll::Pending,
-        }
+        this.poll_write_done(cx)
     }
 
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
+    /// Waits for a write left pending by a non-blocking `write`.
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.get_mut().poll_write_done(cx).map_ok(drop)
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {

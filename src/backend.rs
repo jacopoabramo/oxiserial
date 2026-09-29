@@ -42,6 +42,12 @@ pub trait Backend: AsyncRead + AsyncWrite + Unpin + Send + 'static {
     fn cancel_write(&mut self) -> Result<usize, SerialError> {
         Ok(0)
     }
+
+    /// Leaves a write that `poll_write` has not finished to complete on its own and returns
+    /// the bytes handed to the device, for a non-blocking write.
+    fn detach_write(&mut self) -> usize {
+        0
+    }
 }
 
 /// Opens `port` and applies `settings`.

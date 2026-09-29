@@ -333,7 +333,11 @@ impl PortCore {
                     _ if write_timeout == Some(0.0) => {
                         match poll_once(|cx| self.poll_write_some(cx, &data[written..])).await {
                             Some(result) => result?,
-                            None => return Ok(written + self.cancel_write()?),
+                            // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): a
+                            // write still pending counts as written and completes in the driver.
+                            None => {
+                                return Ok(written + self.with_backend(|p| Ok(p.detach_write()))?);
+                            }
                         }
                     }
                     None => poll_fn(|cx| self.poll_write_some(cx, &data[written..])).await?,
@@ -344,6 +348,10 @@ impl PortCore {
                             .map_err(|_| SerialError::Timeout("Write timeout".into()))??
                     }
                 };
+                // An aborted write, for example by reset_output_buffer, ends the call with what was sent, as in pyserial.
+                if n == 0 {
+                    return Ok(written);
+                }
                 written += n;
             }
             Ok(data.len())
@@ -369,6 +377,7 @@ impl PortCore {
                 })?,
                 #[cfg(not(unix))]
                 Drain::PollOutWaiting => {
+                    poll_fn(|cx| self.poll_flush_some(cx)).await?;
                     while self.out_waiting()? > 0 {
                         tokio::time::sleep(Duration::from_millis(5)).await;
                     }
@@ -530,14 +539,20 @@ impl PortCore {
         let Some(port) = slot.as_mut() else {
             return Poll::Ready(Err(SerialError::NotOpen));
         };
-        match Pin::new(port.as_mut()).poll_write(cx, data) {
-            Poll::Ready(Ok(0)) => Poll::Ready(Err(SerialError::Os {
-                errno: None,
-                message: "write failed: the port accepted no data".into(),
-            })),
-            Poll::Ready(result) => Poll::Ready(result.map_err(SerialError::from)),
-            Poll::Pending => Poll::Pending,
-        }
+        Pin::new(port.as_mut())
+            .poll_write(cx, data)
+            .map_err(SerialError::from)
+    }
+
+    #[cfg(not(unix))]
+    fn poll_flush_some(&self, cx: &mut Context<'_>) -> Poll<Result<(), SerialError>> {
+        let mut slot = lock(&self.backend);
+        let Some(port) = slot.as_mut() else {
+            return Poll::Ready(Err(SerialError::NotOpen));
+        };
+        Pin::new(port.as_mut())
+            .poll_flush(cx)
+            .map_err(SerialError::from)
     }
 }
 

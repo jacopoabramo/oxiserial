@@ -147,6 +147,11 @@ impl Backend for Port {
     fn cancel_write(&mut self) -> Result<usize, SerialError> {
         Ok(self.abort_write()?)
     }
+
+    #[cfg(windows)]
+    fn detach_write(&mut self) -> usize {
+        Port::detach_write(self)
+    }
 }
 
 #[cfg(unix)]
