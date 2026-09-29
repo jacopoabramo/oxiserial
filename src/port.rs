@@ -31,6 +31,9 @@ pub struct PortCore {
     closed: Notify,
 }
 
+/// The end of a `send_break` waited for by a blocking OS sleep, which is precise where tokio's timer is not.
+const PRECISE_BREAK_TAIL: Duration = Duration::from_millis(5);
+
 /// Clears the break condition when `send_break` is cancelled before it clears it itself.
 struct BreakGuard<'a>(Option<&'a PortCore>);
 
@@ -392,7 +395,21 @@ impl PortCore {
         self.until_closed(async {
             self.set_break_condition(true)?;
             let mut clear = BreakGuard(Some(self));
-            tokio::time::sleep(duration).await;
+            let start = Instant::now();
+            // tokio's timer ticks in whole milliseconds and wakes late, so it only waits
+            // for the part that close or cancel may need to interrupt.
+            let coarse = duration.saturating_sub(PRECISE_BREAK_TAIL);
+            // Even a zero sleep waits for the timer's next tick.
+            if !coarse.is_zero() {
+                tokio::time::sleep(coarse).await;
+            }
+            let rest = duration.saturating_sub(start.elapsed());
+            tokio::task::spawn_blocking(move || std::thread::sleep(rest))
+                .await
+                .map_err(|err| SerialError::Os {
+                    code: None,
+                    message: err.to_string(),
+                })?;
             clear.disarm();
             self.set_break_condition(false)
         })
