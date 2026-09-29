@@ -49,6 +49,7 @@ jobs:
           echo "OXISERIAL_PORT_A=/tmp/ttyA" >> "$GITHUB_ENV"
           echo "OXISERIAL_PORT_B=/tmp/ttyB" >> "$GITHUB_ENV"
       - name: Download com0com
+        id: com0com-download
         if: runner.os == 'Windows'
         continue-on-error: true
         shell: pwsh
@@ -58,7 +59,8 @@ jobs:
           Invoke-WebRequest -UserAgent "oxiserial-ci" -OutFile "$dir.zip" `
             -Uri "https://sourceforge.net/projects/com0com/files/com0com/2.2.2.0/com0com-2.2.2.0-x64-fre-signed.zip/download"
       - name: Extract com0com
-        if: runner.os == 'Windows'
+        id: com0com-extract
+        if: runner.os == 'Windows' && steps.com0com-download.outcome == 'success'
         continue-on-error: true
         shell: pwsh
         run: |
@@ -70,7 +72,8 @@ jobs:
           Write-Host "Installer: $($installer.FullName)"
           "COM0COM_INSTALLER=$($installer.FullName)" >> $env:GITHUB_ENV
       - name: Trust the com0com signer
-        if: runner.os == 'Windows'
+        id: com0com-trust
+        if: runner.os == 'Windows' && steps.com0com-extract.outcome == 'success'
         continue-on-error: true
         shell: pwsh
         run: |
@@ -82,7 +85,8 @@ jobs:
           $store.Add($cert)
           $store.Close()
       - name: Install com0com
-        if: runner.os == 'Windows'
+        id: com0com-install
+        if: runner.os == 'Windows' && steps.com0com-trust.outcome == 'success'
         continue-on-error: true
         shell: pwsh
         run: |
@@ -91,7 +95,8 @@ jobs:
           Write-Host "Installer exit code: $($proc.ExitCode)"
           if ($proc.ExitCode -ne 0) { throw "com0com installer failed with exit code $($proc.ExitCode)" }
       - name: Create the port pair
-        if: runner.os == 'Windows'
+        id: com0com-pair
+        if: runner.os == 'Windows' && steps.com0com-install.outcome == 'success'
         continue-on-error: true
         shell: pwsh
         env:
@@ -112,7 +117,8 @@ jobs:
             Pop-Location
           }
       - name: Check the ports exist
-        if: runner.os == 'Windows'
+        id: com0com-check
+        if: runner.os == 'Windows' && steps.com0com-pair.outcome == 'success'
         continue-on-error: true
         shell: pwsh
         env:
@@ -126,7 +132,8 @@ jobs:
             if ($names -notcontains $p) { throw "Port $p was not created" }
           }
       - name: Export the ports
-        if: runner.os == 'Windows'
+        id: com0com-export
+        if: runner.os == 'Windows' && steps.com0com-check.outcome == 'success'
         continue-on-error: true
         shell: pwsh
         env:
