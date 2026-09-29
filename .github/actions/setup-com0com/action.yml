@@ -1,0 +1,94 @@
+name: Set up com0com
+description: Install com0com on a Windows runner and create a virtual serial port pair.
+
+inputs:
+  port-a:
+    description: Name of the first port.
+    default: COM90
+  port-b:
+    description: Name of the second port.
+    default: COM91
+
+outputs:
+  port-a:
+    description: Name of the first port.
+    value: ${{ inputs.port-a }}
+  port-b:
+    description: Name of the second port.
+    value: ${{ inputs.port-b }}
+
+runs:
+  using: composite
+  steps:
+    - name: Download com0com
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $dir = Join-Path $env:RUNNER_TEMP "com0com"
+        Invoke-WebRequest -UserAgent "oxiserial-ci" -OutFile "$dir.zip" `
+          -Uri "https://sourceforge.net/projects/com0com/files/com0com/2.2.2.0/com0com-2.2.2.0-x64-fre-signed.zip/download"
+
+    - name: Extract com0com
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $dir = Join-Path $env:RUNNER_TEMP "com0com"
+        Expand-Archive "$dir.zip" $dir
+        $installer = Get-ChildItem $dir -Recurse -Filter *.exe | Select-Object -First 1
+        if (-not $installer) { throw "No installer .exe found in $dir" }
+        Write-Host "Installer: $($installer.FullName)"
+
+    - name: Trust the com0com signer
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $dir = Join-Path $env:RUNNER_TEMP "com0com"
+        $installer = Get-ChildItem $dir -Recurse -Filter *.exe | Select-Object -First 1
+        # A silent driver install needs the publisher certificate trusted first.
+        $cert = (Get-AuthenticodeSignature $installer.FullName).SignerCertificate
+        $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("TrustedPublisher", "LocalMachine")
+        $store.Open("ReadWrite")
+        $store.Add($cert)
+        $store.Close()
+
+    - name: Install com0com
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $dir = Join-Path $env:RUNNER_TEMP "com0com"
+        $installer = Get-ChildItem $dir -Recurse -Filter *.exe | Select-Object -First 1
+        $proc = Start-Process $installer.FullName -ArgumentList "/S" -Wait -PassThru
+        Write-Host "Installer exit code: $($proc.ExitCode)"
+
+    - name: Create the port pair
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $setupc = @("${env:ProgramFiles(x86)}\com0com\setupc.exe", "$env:ProgramFiles\com0com\setupc.exe") |
+          Where-Object { Test-Path $_ } | Select-Object -First 1
+        if (-not $setupc) { throw "setupc.exe not found under Program Files" }
+        Write-Host "setupc: $setupc"
+        # setupc.exe runs from its own directory to find its .inf files.
+        Push-Location (Split-Path $setupc)
+        try {
+          & $setupc install PortName=${{ inputs.port-a }} PortName=${{ inputs.port-b }}
+        } finally {
+          Pop-Location
+        }
+
+    - name: Check the ports exist
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $names = [System.IO.Ports.SerialPort]::GetPortNames()
+        Write-Host "Ports: $($names -join ', ')"
+        foreach ($p in "${{ inputs.port-a }}", "${{ inputs.port-b }}") {
+          if ($names -notcontains $p) { throw "Port $p was not created" }
+        }
+
+    - name: Export the ports
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        "OXISERIAL_PORT_A=${{ inputs.port-a }}" >> $env:GITHUB_ENV
+        "OXISERIAL_PORT_B=${{ inputs.port-b }}" >> $env:GITHUB_ENV
