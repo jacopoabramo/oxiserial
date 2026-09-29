@@ -426,10 +426,6 @@ mod tests {
         Ok(())
     }
 
-    #[cfg_attr(
-        not(feature = "test-backend"),
-        allow(clippy::infallible_destructuring_match)
-    )]
     #[tokio::test]
     async fn drain_handle_gives_a_descriptor_that_drains() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -437,7 +433,6 @@ mod tests {
         a.write_all(b"x").await?;
         let fd = match a.drain_handle()? {
             Drain::Fd(fd) => fd,
-            #[cfg(feature = "test-backend")]
             Drain::Done => return Err("expected a descriptor".into()),
         };
         nix::sys::termios::tcdrain(&fd)?;
