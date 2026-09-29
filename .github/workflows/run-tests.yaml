@@ -67,10 +67,14 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $dir = Join-Path $env:RUNNER_TEMP "com0com"
           Expand-Archive "$dir.zip" $dir
-          $installer = Get-ChildItem $dir -Recurse -Filter *.exe | Select-Object -First 1
-          if (-not $installer) { throw "No installer .exe found in $dir" }
-          Write-Host "Installer: $($installer.FullName)"
-          "COM0COM_INSTALLER=$($installer.FullName)" >> $env:GITHUB_ENV
+          $setup = Get-ChildItem $dir -Recurse -Filter setup.exe | Select-Object -First 1
+          if (-not $setup) { throw "setup.exe not found in $dir" }
+          7z x -y "-o$dir\driver" $setup.FullName
+          if ($LASTEXITCODE -ne 0) { throw "7z failed with exit code $LASTEXITCODE" }
+          foreach ($f in "com0com.inf", "com0com.cat", "setupc.exe") {
+            if (-not (Test-Path "$dir\driver\$f")) { throw "$f missing from the extracted driver" }
+          }
+          "COM0COM_DIR=$dir\driver" >> $env:GITHUB_ENV
       - name: Trust the com0com signer
         id: com0com-trust
         if: runner.os == 'Windows' && steps.com0com-extract.outcome == 'success'
@@ -78,25 +82,16 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # A silent driver install needs the publisher certificate trusted first.
-          $cert = (Get-AuthenticodeSignature $env:COM0COM_INSTALLER).SignerCertificate
+          # A silent driver install needs the publisher certificate trusted first; the driver catalog, not setup.exe, carries the signature.
+          $sig = Get-AuthenticodeSignature (Join-Path $env:COM0COM_DIR 'com0com.cat')
+          if ($sig.Status -ne 'Valid' -or -not $sig.SignerCertificate) { throw "com0com.cat signature is $($sig.Status)" }
           $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("TrustedPublisher", "LocalMachine")
           $store.Open("ReadWrite")
-          $store.Add($cert)
+          $store.Add($sig.SignerCertificate)
           $store.Close()
-      - name: Install com0com
-        id: com0com-install
-        if: runner.os == 'Windows' && steps.com0com-trust.outcome == 'success'
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $proc = Start-Process $env:COM0COM_INSTALLER -ArgumentList "/S" -Wait -PassThru
-          Write-Host "Installer exit code: $($proc.ExitCode)"
-          if ($proc.ExitCode -ne 0) { throw "com0com installer failed with exit code $($proc.ExitCode)" }
       - name: Create the port pair
         id: com0com-pair
-        if: runner.os == 'Windows' && steps.com0com-install.outcome == 'success'
+        if: runner.os == 'Windows' && steps.com0com-trust.outcome == 'success'
         continue-on-error: true
         shell: pwsh
         env:
@@ -104,14 +99,10 @@ jobs:
           PORT_B: COM91
         run: |
           $ErrorActionPreference = 'Stop'
-          $setupc = @("${env:ProgramFiles(x86)}\com0com\setupc.exe", "$env:ProgramFiles\com0com\setupc.exe") |
-            Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $setupc) { throw "setupc.exe not found under Program Files" }
-          Write-Host "setupc: $setupc"
-          # setupc.exe runs from its own directory to find its .inf files.
-          Push-Location (Split-Path $setupc)
+          # setupc.exe installs the driver from the .inf in its current directory.
+          Push-Location $env:COM0COM_DIR
           try {
-            & $setupc install PortName=$env:PORT_A PortName=$env:PORT_B
+            .\setupc.exe --silent install PortName=$env:PORT_A PortName=$env:PORT_B
             if ($LASTEXITCODE -ne 0) { throw "setupc install failed with exit code $LASTEXITCODE" }
           } finally {
             Pop-Location
