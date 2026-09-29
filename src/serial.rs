@@ -58,6 +58,7 @@ pub(crate) mod ops {
 
 /// Copies `bytes`, `str` (as UTF-8) or anything `bytearray(data)` accepts.
 pub(crate) fn to_bytes(data: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
+    // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): bytearray conversion of written data.
     if let Ok(bytes) = data.cast::<PyBytes>() {
         return Ok(bytes.as_bytes().to_vec());
     }
@@ -81,6 +82,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for Baudrate {
 
     fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         let value: &Bound<'py, PyAny> = &obj;
+        // Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
         let number = value
             .py()
             .get_type::<PyInt>()
@@ -101,6 +103,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for Bytesize {
 
     fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
         let value: &Bound<'py, PyAny> = &obj;
+        // Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
         let number = value
             .extract::<f64>()
             .ok()

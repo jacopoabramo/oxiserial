@@ -17,6 +17,8 @@ that can be waited on (`.wait()`) or awaited.
 
 - `pyserial` 3.5 is the specification for the public API: names, signatures,
   defaults, exception types and behaviour.
+- Code or text taken from pyserial gets a one-line comment saying so; the
+  notice is in `LICENSES/pyserial.txt`.
 - OS access goes through crates (`serialport`, `tokio-serial`, and `nix` or
   `windows-sys` for what those lack). No hand-written FFI.
 - Every item exposed to Python has a matching stub entry; `stubtest` checks

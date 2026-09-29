@@ -33,6 +33,7 @@ pub struct ListPortInfo {
 
 /// Bus number pyserial shows on Windows: the last `USBROOT(n)` index plus one.
 fn windows_bus_number(bus_id: &str) -> Option<u32> {
+    // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): USBROOT(n) is shown as bus n + 1.
     const MARKER: &str = "USBROOT(";
     let digits: String = bus_id[bus_id.rfind(MARKER)? + MARKER.len()..]
         .chars()
@@ -50,6 +51,7 @@ fn format_location(location: &Location) -> String {
 
 /// Natural-sort key: each digit run is one integer, each other run its UTF-8 bytes.
 fn natural_key(text: &str) -> Vec<Vec<u128>> {
+    // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): port ordering follows numsplit.
     let mut key = Vec::new();
     let mut rest = text;
     while let Some(first) = rest.chars().next() {
@@ -108,6 +110,7 @@ impl ListPortInfo {
     }
 
     fn usb_description(&self) -> String {
+        // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): description format.
         match (&self.product, &self.interface) {
             (product, Some(interface)) => {
                 format!("{} - {interface}", product.as_deref().unwrap_or("None"))
@@ -118,6 +121,7 @@ impl ListPortInfo {
     }
 
     fn usb_info(&self) -> String {
+        // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): hwid format.
         let serial = self
             .serial_number
             .as_ref()

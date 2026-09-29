@@ -24,6 +24,7 @@ impl Backend for SerialStream {
     fn configure(&mut self, settings: &Settings) -> Result<(), SerialError> {
         #[cfg(all(unix, not(target_os = "linux")))]
         if matches!(settings.parity, Parity::Mark | Parity::Space) {
+            // Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
             return Err(SerialError::Value(format!(
                 "Invalid parity: '{}'",
                 settings.parity.name()
@@ -150,6 +151,7 @@ mod platform {
     pub fn apply(stream: &SerialStream, settings: &Settings) -> Result<(), SerialError> {
         // SAFETY: the descriptor belongs to `stream`, which outlives this call.
         let fd = unsafe { BorrowedFd::borrow_raw(stream.as_raw_fd()) };
+        // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): INPCK, ISTRIP and IXANY cleared, IXON and IXOFF from xonxoff.
         let mut termios = tcgetattr(fd).map_err(std::io::Error::from)?;
         termios
             .input_flags
@@ -175,6 +177,7 @@ mod platform {
 
         use crate::settings::Parity;
 
+        // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): CMSPAR mark and space parity.
         flags.remove(ControlFlags::CMSPAR);
         match parity {
             Parity::Mark => {
@@ -236,6 +239,7 @@ mod platform {
         if settings.stopbits == StopBits::OnePointFive {
             dcb.StopBits = ONE5STOPBITS;
         }
+        // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): dsrdtr, rtscts and xonxoff flag choices.
         dcb._bitfield &= !(F_OUTX_DSR_FLOW | F_DTR_CONTROL_MASK | F_OUT_X | F_IN_X);
         dcb._bitfield |= if settings.dsrdtr {
             F_OUTX_DSR_FLOW | F_DTR_CONTROL_HANDSHAKE

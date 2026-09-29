@@ -13,6 +13,7 @@ pub enum Parity {
 
 impl Parity {
     pub fn from_name(name: &str) -> Result<Self, SerialError> {
+        // Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
         match name {
             "N" => Ok(Self::None),
             "E" => Ok(Self::Even),
@@ -43,6 +44,7 @@ pub enum StopBits {
 
 impl StopBits {
     pub fn from_value(value: f64) -> Result<Self, SerialError> {
+        // Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
         if value == 1.0 {
             Ok(Self::One)
         } else if value == 1.5 {
@@ -92,10 +94,12 @@ impl Default for Settings {
 }
 
 pub fn baudrate(value: i64) -> Result<u32, SerialError> {
+    // Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
     u32::try_from(value).map_err(|_| SerialError::Value(format!("Not a valid baudrate: {value}")))
 }
 
 pub fn bytesize(value: i64) -> Result<u8, SerialError> {
+    // Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
     match value {
         5..=8 => Ok(value as u8),
         _ => Err(SerialError::Value(format!(
@@ -106,6 +110,7 @@ pub fn bytesize(value: i64) -> Result<u8, SerialError> {
 
 /// Validates a timeout in seconds; `None` means no timeout.
 pub fn seconds(value: Option<f64>) -> Result<Option<f64>, SerialError> {
+    // Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
     match value {
         Some(v) if v.is_nan() || v < 0.0 => {
             Err(SerialError::Value(format!("Not a valid timeout: {v:?}")))

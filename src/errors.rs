@@ -23,6 +23,7 @@ pub enum SerialError {
 impl SerialError {
     /// A read that reported readiness but returned no bytes.
     pub fn disconnected() -> Self {
+        // Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
         Self::Os {
             errno: None,
             message: "device reports readiness to read but returned no data \
@@ -32,6 +33,7 @@ impl SerialError {
     }
 
     pub fn open_failed(port: &str, err: tokio_serial::Error) -> Self {
+        // Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
         Self::Os {
             errno: None,
             message: format!("could not open port '{port}': {}", err.description),
@@ -41,6 +43,7 @@ impl SerialError {
 
 impl std::fmt::Display for SerialError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
         match self {
             Self::Os { message, .. } | Self::Timeout(message) | Self::Value(message) => {
                 f.write_str(message)
