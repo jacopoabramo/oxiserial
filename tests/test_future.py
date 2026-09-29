@@ -121,26 +121,19 @@ def test_cancel_always_reports_cancelled() -> None:
 
 
 def test_callback_without_loop_runs_in_the_completing_thread() -> None:
-    """Call a callback added outside a loop once, with the future, in another thread."""
-    future = _testing.delayed(b"x", 0.05)
+    """Call a callback added outside a loop once, in the thread that completes it."""
+    future = _testing.delayed(b"x", 10)
     calls: list[tuple[Any, int]] = []
-    finished = threading.Event()
-
-    def callback(f: Any) -> None:
-        calls.append((f, threading.get_ident()))
-        finished.set()
-
-    future.add_done_callback(callback)
-    assert future.wait() == b"x"
-    assert finished.wait(5)
-    assert len(calls) == 1
-    assert calls[0][0] is future
-    assert calls[0][1] != threading.get_ident()
+    future.add_done_callback(lambda f: calls.append((f, threading.get_ident())))
+    canceller = threading.Thread(target=future.cancel)
+    canceller.start()
+    canceller.join()
+    assert calls == [(future, canceller.ident)]
 
 
 def test_callback_runs_on_the_running_loop(run: Runner) -> None:
     """Run a callback added inside a running loop on that loop's thread."""
-    future = _testing.delayed(b"x", 0.05)
+    future = _testing.delayed(b"x", 10)
 
     async def main() -> tuple[list[int], int]:
         threads: list[int] = []
@@ -151,6 +144,7 @@ def test_callback_runs_on_the_running_loop(run: Runner) -> None:
             called.set_result(f)
 
         future.add_done_callback(callback)
+        threading.Thread(target=future.cancel).start()
         assert await asyncio.wait_for(called, 5) is future
         return threads, threading.get_ident()
 
@@ -186,18 +180,15 @@ def test_callback_after_completion_with_loop_runs_soon(run: Runner) -> None:
 
 def test_remove_done_callback() -> None:
     """Remove every equal registration, report the count and skip removed callbacks."""
-    future = _testing.delayed(b"x", 0.05)
+    future = _testing.delayed(b"x", 10)
     removed: list[Any] = []
     kept: list[Any] = []
-    finished = threading.Event()
     future.add_done_callback(removed.append)
     future.add_done_callback(kept.append)
     future.add_done_callback(removed.append)
-    future.add_done_callback(lambda f: finished.set())
     assert future.remove_done_callback(removed.append) == 2
     assert future.remove_done_callback(removed.append) == 0
-    future.wait()
-    assert finished.wait(5)
+    future.cancel()
     assert removed == []
     assert kept == [future]
 
@@ -219,9 +210,10 @@ def test_exception() -> None:
     assert not succeeded.cancelled()
 
     failed = _testing.panic_in_task()
-    with pytest.raises(SerialException):
+    with pytest.raises(SerialException) as raised:
         failed.wait(timeout=5)
     assert isinstance(failed.exception(), SerialException)
+    assert failed.exception() is raised.value
     assert not failed.cancelled()
 
     pending = _testing.delayed(b"x", 10)
@@ -264,3 +256,77 @@ def test_callback_context() -> None:
     var.reset(token)
     future.cancel()
     assert seen == ["given", "registered"]
+
+
+def test_callback_on_a_closed_loop_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Report a callback whose loop closed before the operation finished."""
+    future = _testing.delayed(b"x", 10)
+    calls: list[Any] = []
+
+    async def register() -> None:
+        future.add_done_callback(calls.append)
+
+    loop = asyncio.new_event_loop()
+    loop.run_until_complete(register())
+    loop.close()
+    reports: list[Any] = []
+    monkeypatch.setattr(sys, "unraisablehook", reports.append)
+    future.cancel()
+    assert [type(r.exc_value) for r in reports] == [RuntimeError]
+    assert calls == []
+
+
+def test_callback_context_on_the_loop(run: Runner) -> None:
+    """Run a callback scheduled on the loop in the given or registering context."""
+    var = contextvars.ContextVar("var", default="unset")
+    given = contextvars.copy_context()
+    given.run(var.set, "given")
+    future = _testing.delayed(b"x", 10)
+
+    async def main() -> list[str]:
+        seen: list[str] = []
+        called = asyncio.get_running_loop().create_future()
+
+        def record(f: Any) -> None:
+            seen.append(var.get())
+            if len(seen) == 2:
+                called.set_result(None)
+
+        future.add_done_callback(record, context=given)
+        token = var.set("registered")
+        future.add_done_callback(record)
+        var.reset(token)
+        threading.Thread(target=future.cancel).start()
+        await asyncio.wait_for(called, 5)
+        return seen
+
+    assert run(main()) == ["given", "registered"]
+
+
+def test_raising_callback_on_the_loop_is_reported(run: Runner) -> None:
+    """Pass an exception from a loop callback to the loop's exception handler."""
+    future = _testing.delayed(b"x", 10)
+
+    async def main() -> tuple[list[Any], list[Any]]:
+        loop = asyncio.get_running_loop()
+        handled: list[Any] = []
+        loop.set_exception_handler(lambda loop, context: handled.append(context))
+        calls: list[Any] = []
+        called = loop.create_future()
+
+        def fail(f: Any) -> None:
+            raise ValueError("callback failed")
+
+        def record(f: Any) -> None:
+            calls.append(f)
+            called.set_result(None)
+
+        future.add_done_callback(fail)
+        future.add_done_callback(record)
+        threading.Thread(target=future.cancel).start()
+        await asyncio.wait_for(called, 5)
+        return handled, calls
+
+    handled, calls = run(main())
+    assert [type(c.get("exception")) for c in handled] == [ValueError]
+    assert calls == [future]

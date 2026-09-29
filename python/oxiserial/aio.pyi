@@ -53,6 +53,10 @@ class Future(Generic[_T_co]):
     def exception(self) -> BaseException | None:
         """Return the exception the operation failed with, or `None` on success.
 
+        Every call returns the same object, and it is the one that
+        [`result`][oxiserial.aio.Future.result] and
+        [`wait`][oxiserial.aio.Future.wait] raise.
+
         Raises
         ------
         asyncio.CancelledError
@@ -73,7 +77,9 @@ class Future(Generic[_T_co]):
 
         An exception raised by `fn` goes to the loop's exception handler, or to
         `sys.unraisablehook` when no loop is running; the remaining callbacks
-        still run.
+        still run. If the loop `fn` belongs to has closed before the operation
+        finishes, `fn` is not called and the `RuntimeError` from scheduling it
+        goes to `sys.unraisablehook`.
 
         Parameters
         ----------

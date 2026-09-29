@@ -59,10 +59,6 @@ impl Callback {
             return self.context.bind(py).call_method1("run", args).map(drop);
         };
         let event_loop = event_loop.bind(py);
-        // A closed loop can no longer run anything, so there is nobody left to call back.
-        if event_loop.call_method0("is_closed")?.is_truthy()? {
-            return Ok(());
-        }
         let kwargs = PyDict::new(py);
         kwargs.set_item("context", &self.context)?;
         event_loop
@@ -83,6 +79,7 @@ struct State {
     waiters: Vec<Waiter>,
     callbacks: Vec<Arc<Callback>>,
     abort: Option<AbortHandle>,
+    exception: Option<Py<PyAny>>,
 }
 
 #[derive(Default)]
@@ -91,10 +88,34 @@ struct Shared {
     finished: Condvar,
 }
 
-fn to_python(py: Python<'_>, resolution: &Resolution) -> PyResult<Py<PyAny>> {
+/// The exception object for the failure `err`, created on first use so every caller gets the same one.
+fn exception_object(py: Python<'_>, shared: &Shared, err: &SerialError) -> Py<PyAny> {
+    if let Some(exception) = &lock(&shared.state).exception {
+        return exception.clone_ref(py);
+    }
+    let created = PyErr::from(err.clone()).into_value(py).into_any();
+    let mut state = lock(&shared.state);
+    let exception = state
+        .exception
+        .get_or_insert_with(|| created.clone_ref(py))
+        .clone_ref(py);
+    // Releasing an unused exception object can run Python code, so it happens after the lock.
+    drop(state);
+    exception
+}
+
+fn to_python(py: Python<'_>, shared: &Shared, resolution: &Resolution) -> PyResult<Py<PyAny>> {
     match resolution {
         Ok(outcome) => outcome.to_py(py),
-        Err(err) => Err(err.clone().into()),
+        Err(SerialError::Cancelled) => Err(SerialError::Cancelled.into()),
+        Err(err) => {
+            let exception = exception_object(py, shared, err);
+            // Each raise starts a fresh traceback; otherwise raising the shared object again extends it.
+            let exception = exception
+                .bind(py)
+                .call_method1("with_traceback", (py.None(),))?;
+            Err(PyErr::from_value(exception))
+        }
     }
 }
 
@@ -113,9 +134,14 @@ fn settle(future: &Bound<'_, PyAny>, value: &PyResult<Py<PyAny>>) -> PyResult<()
 }
 
 /// Hands the result to `waiter`'s loop; asyncio futures may only be touched from their loop's thread.
-fn schedule(py: Python<'_>, waiter: &Waiter, resolution: &Resolution) -> PyResult<()> {
+fn schedule(
+    py: Python<'_>,
+    shared: &Shared,
+    waiter: &Waiter,
+    resolution: &Resolution,
+) -> PyResult<()> {
     let future = waiter.future.clone_ref(py);
-    let value = to_python(py, resolution);
+    let value = to_python(py, shared, resolution);
     let callback = PyCFunction::new_closure(py, None, None, move |args, _kwargs| {
         settle(future.bind(args.py()), &value)
     })?;
@@ -154,7 +180,7 @@ fn complete(shared: &Shared, resolution: Resolution) -> bool {
                     // Nobody can receive a result on a closed loop; scheduling on it would raise.
                     Ok(true) => {}
                     Ok(false) => {
-                        if let Err(err) = schedule(py, &waiter, &resolution) {
+                        if let Err(err) = schedule(py, shared, &waiter, &resolution) {
                             err.write_unraisable(py, None);
                         }
                     }
@@ -286,7 +312,7 @@ impl OpFuture {
             state.result.clone()
         };
         if let Some(resolution) = finished {
-            settle(&future, &to_python(py, &resolution))?;
+            settle(&future, &to_python(py, &shared, &resolution))?;
         }
         let on_done = PyCFunction::new_closure(py, None, None, move |args, _kwargs| {
             if args.get_item(0)?.call_method0("cancelled")?.is_truthy()? {
@@ -376,7 +402,7 @@ impl OpFuture {
         match failure {
             None => Err(InvalidStateError::new_err("Exception is not set.")),
             Some(SerialError::Cancelled) => Err(SerialError::Cancelled.into()),
-            Some(err) => Ok(Some(PyErr::from(err).into_value(py).into_any())),
+            Some(err) => Ok(Some(exception_object(py, &self.shared, &err))),
         }
     }
 
@@ -392,7 +418,7 @@ impl OpFuture {
         let resolution = lock(&self.shared.state).result.clone();
         match resolution {
             None => Err(InvalidStateError::new_err("Result is not ready.")),
-            Some(resolution) => to_python(py, &resolution),
+            Some(resolution) => to_python(py, &self.shared, &resolution),
         }
     }
 }
