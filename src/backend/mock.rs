@@ -98,7 +98,7 @@ pub fn pair() -> (String, String) {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let state = Arc::new(Mutex::new(PairState::default()));
-    let names = (format!("mock://{id}/a"), format!("mock://{id}/b"));
+    let names = (format!("mock-{id}-a"), format!("mock-{id}-b"));
     let mut ports = lock(registry());
     ports.insert(names.0.clone(), (Arc::clone(&state), 0));
     ports.insert(names.1.clone(), (state, 1));
