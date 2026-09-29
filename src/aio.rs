@@ -8,6 +8,7 @@ use crate::port::PortCore;
 use crate::serial::{
     Baudrate, Bytesize, SerialBase, Truthy, expected_bytes, for_url, ops, to_bytes,
 };
+use crate::settings::Seconds;
 
 /// Returns an `oxiserial.aio.Serial` for `url`, which is a device name or `loop://`.
 #[pyfunction]
@@ -66,12 +67,12 @@ impl AioSerial {
         bytesize: Bytesize,
         parity: &str,
         stopbits: f64,
-        timeout: Option<f64>,
+        timeout: Option<Seconds>,
         xonxoff: Truthy,
         rtscts: Truthy,
-        write_timeout: Option<f64>,
+        write_timeout: Option<Seconds>,
         dsrdtr: Option<Truthy>,
-        inter_byte_timeout: Option<f64>,
+        inter_byte_timeout: Option<Seconds>,
         exclusive: Option<Truthy>,
     ) -> PyResult<()> {
         SerialBase::init(

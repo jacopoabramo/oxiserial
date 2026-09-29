@@ -333,7 +333,7 @@ impl PortCore {
             let mut written = 0;
             while written < data.len() {
                 let n = match deadline {
-                    _ if write_timeout == Some(0.0) => {
+                    _ if write_timeout.is_some_and(|t| t.as_f64() == 0.0) => {
                         match poll_once(|cx| self.poll_write_some(cx, &data[written..])).await {
                             Some(result) => result?,
                             // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): a
@@ -660,9 +660,9 @@ mod tests {
         let calls = || mock::update(&a_name, |end| end.configure_calls);
         assert_eq!(calls(), Some(1));
         a.update_settings(|s| {
-            s.timeout = Some(1.0);
-            s.write_timeout = Some(1.0);
-            s.inter_byte_timeout = Some(0.1);
+            s.timeout = Some(1.0.into());
+            s.write_timeout = Some(1.0.into());
+            s.inter_byte_timeout = Some(0.1.into());
         })?;
         assert_eq!(calls(), Some(1));
         a.update_settings(|s| s.baudrate = 19_200)?;
@@ -699,7 +699,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn timeout_returns_partial_data_after_the_deadline() -> Result<(), SerialError> {
-        let (a, b, _) = open_pair(|s| s.timeout = Some(1.0))?;
+        let (a, b, _) = open_pair(|s| s.timeout = Some(1.0.into()))?;
         a.write(b"ab").await?;
         let start = Instant::now();
         assert_eq!(b.read(4).await?, b"ab");
@@ -710,7 +710,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn zero_timeout_returns_buffered_bytes_without_waiting() -> Result<(), SerialError> {
-        let (a, b, _) = open_pair(|s| s.timeout = Some(0.0))?;
+        let (a, b, _) = open_pair(|s| s.timeout = Some(0.0.into()))?;
         assert_eq!(b.read(4).await?, b"");
         a.write(b"ab").await?;
         let start = Instant::now();
@@ -721,7 +721,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn inter_byte_timeout_ends_the_read_after_a_gap() -> Result<(), SerialError> {
-        let (a, b, _) = open_pair(|s| s.inter_byte_timeout = Some(0.1))?;
+        let (a, b, _) = open_pair(|s| s.inter_byte_timeout = Some(0.1.into()))?;
         let (read, written) = tokio::join!(b.read(10), async {
             a.write(b"a").await?;
             tokio::time::sleep(Duration::from_millis(80)).await;
@@ -739,7 +739,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn read_until_leaves_later_bytes_unread() -> Result<(), SerialError> {
-        let (a, b, _) = open_pair(|s| s.timeout = Some(0.0))?;
+        let (a, b, _) = open_pair(|s| s.timeout = Some(0.0.into()))?;
         a.write(b"x\ny\nabcdef").await?;
         assert_eq!(b.read_until(b"\n", None).await?, b"x\n");
         assert_eq!(b.read_until(b"\n", None).await?, b"y\n");
@@ -759,7 +759,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn readline_gives_each_byte_the_full_timeout() -> Result<(), SerialError> {
-        let (a, b, _) = open_pair(|s| s.timeout = Some(0.3))?;
+        let (a, b, _) = open_pair(|s| s.timeout = Some(0.3.into()))?;
         let (line, written) = tokio::join!(b.readline(None), trickle(&a, b"abcd\n"));
         written?;
         assert_eq!(line?, b"abcd\n");
@@ -768,7 +768,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn read_until_keeps_one_overall_deadline() -> Result<(), SerialError> {
-        let (a, b, _) = open_pair(|s| s.timeout = Some(0.4))?;
+        let (a, b, _) = open_pair(|s| s.timeout = Some(0.4.into()))?;
         let (line, written) = tokio::join!(b.read_until(b"\n", None), trickle(&a, b"abcd\n"));
         written?;
         assert_eq!(line?, b"ab");
@@ -777,7 +777,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn write_timeout_raises_when_the_port_does_not_drain() -> Result<(), SerialError> {
-        let (a, _b, a_name) = open_pair(|s| s.write_timeout = Some(0.5))?;
+        let (a, _b, a_name) = open_pair(|s| s.write_timeout = Some(0.5.into()))?;
         mock::update(&a_name, |end| end.write_blocked = true);
         assert!(matches!(a.write(b"x").await, Err(SerialError::Timeout(_))));
         Ok(())
@@ -785,7 +785,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn zero_write_timeout_returns_bytes_written() -> Result<(), SerialError> {
-        let (a, _b, a_name) = open_pair(|s| s.write_timeout = Some(0.0))?;
+        let (a, _b, a_name) = open_pair(|s| s.write_timeout = Some(0.0.into()))?;
         mock::update(&a_name, |end| end.write_blocked = true);
         assert_eq!(a.write(b"xy").await, Ok(0));
         Ok(())
@@ -901,7 +901,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn huge_timeout_waits_like_none() -> Result<(), SerialError> {
-        let (a, b, _) = open_pair(|s| s.timeout = Some(1e300))?;
+        let (a, b, _) = open_pair(|s| s.timeout = Some(1e300.into()))?;
         let (read, written) = tokio::join!(b.read(2), async {
             tokio::time::sleep(Duration::from_secs(3600)).await;
             a.write(b"ab").await

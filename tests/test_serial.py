@@ -254,6 +254,17 @@ def test_numeric_settings_are_coerced_like_pyserial() -> None:
         Serial(bytesize=8.5)  # type: ignore[arg-type]
 
 
+def test_timeouts_read_back_as_the_number_given() -> None:
+    """Keep each timeout as the int or float it was set to, as pyserial does."""
+    port = Serial(timeout=1, write_timeout=0.5)
+    port.apply_settings({"inter_byte_timeout": 2})
+    assert [type(port.timeout), type(port.write_timeout)] == [int, float]
+    assert type(port.get_settings()["inter_byte_timeout"]) is int
+    assert "timeout=1," in repr(port)
+    with pytest.raises(ValueError, match="Not a valid timeout: 'soon'"):
+        port.timeout = "soon"  # type: ignore[assignment]
+
+
 def test_dsrdtr_none_follows_rtscts() -> None:
     """Follow rtscts when dsrdtr is None."""
     assert Serial(rtscts=True, dsrdtr=None).dsrdtr is True
@@ -356,7 +367,7 @@ def test_read_all_portstr_and_repr(
     assert a.portstr == mock_pair[0]
     assert repr(a) == (
         f"Serial<id=0x{id(a):x}, open=True>(port={mock_pair[0]!r}, baudrate=9600, "
-        "bytesize=8, parity='N', stopbits=1, timeout=1.0, xonxoff=False, "
+        "bytesize=8, parity='N', stopbits=1, timeout=1, xonxoff=False, "
         "rtscts=False, dsrdtr=False)"
     )
 
