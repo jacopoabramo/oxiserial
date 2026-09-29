@@ -7,6 +7,18 @@ use crate::settings::Settings;
 pub mod mock;
 pub mod native;
 
+/// What `PortCore::flush` waits on once the backend lock is released.
+pub enum Drain {
+    /// Nothing is buffered by the backend.
+    Done,
+    /// A duplicate of the port descriptor to run `tcdrain` on.
+    #[cfg(unix)]
+    Fd(std::os::fd::OwnedFd),
+    /// Poll `out_waiting` until it reaches zero.
+    #[cfg(not(unix))]
+    PollOutWaiting,
+}
+
 /// An open port: async byte I/O plus the control calls pyserial exposes.
 pub trait Backend: AsyncRead + AsyncWrite + Unpin + Send + 'static {
     fn configure(&mut self, settings: &Settings) -> Result<(), SerialError>;
@@ -21,6 +33,7 @@ pub trait Backend: AsyncRead + AsyncWrite + Unpin + Send + 'static {
     fn clear_buffers(&self, input: bool, output: bool) -> Result<(), SerialError>;
     fn set_break_state(&self, on: bool) -> Result<(), SerialError>;
     fn fileno(&self) -> Option<i32>;
+    fn drain_handle(&self) -> Result<Drain, SerialError>;
 }
 
 /// Opens `port` and applies `settings`.

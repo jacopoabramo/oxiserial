@@ -2,7 +2,7 @@ use tokio_serial::{
     ClearBuffer, DataBits, FlowControl, SerialPort, SerialPortBuilderExt, SerialStream,
 };
 
-use crate::backend::Backend;
+use crate::backend::{Backend, Drain};
 use crate::errors::SerialError;
 use crate::runtime::runtime;
 use crate::settings::{Parity, Settings, StopBits};
@@ -115,6 +115,21 @@ impl Backend for SerialStream {
         #[cfg(not(unix))]
         {
             None
+        }
+    }
+
+    fn drain_handle(&self) -> Result<Drain, SerialError> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::{AsRawFd, BorrowedFd};
+
+            // SAFETY: the descriptor belongs to `self`, which outlives this borrow.
+            let fd = unsafe { BorrowedFd::borrow_raw(self.as_raw_fd()) };
+            Ok(Drain::Fd(fd.try_clone_to_owned()?))
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(Drain::PollOutWaiting)
         }
     }
 }
@@ -267,6 +282,20 @@ mod tests {
         let mut buf = [0u8; 4];
         b.read_exact(&mut buf).await?;
         assert_eq!(&buf, b"ping");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn drain_handle_gives_a_descriptor_that_drains() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (mut a, mut b) = SerialStream::pair()?;
+        a.write_all(b"x").await?;
+        let Drain::Fd(fd) = a.drain_handle()? else {
+            return Err("expected a descriptor".into());
+        };
+        nix::sys::termios::tcdrain(&fd)?;
+        let mut buf = [0u8; 1];
+        b.read_exact(&mut buf).await?;
         Ok(())
     }
 

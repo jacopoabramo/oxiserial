@@ -7,7 +7,7 @@ use std::task::{Context, Poll, Waker};
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-use crate::backend::Backend;
+use crate::backend::{Backend, Drain};
 use crate::errors::SerialError;
 use crate::lock;
 use crate::settings::Settings;
@@ -203,6 +203,10 @@ impl Backend for MockPort {
 
     fn fileno(&self) -> Option<i32> {
         None
+    }
+
+    fn drain_handle(&self) -> Result<Drain, SerialError> {
+        Ok(Drain::Done)
     }
 }
 

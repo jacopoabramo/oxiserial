@@ -9,7 +9,7 @@ use tokio::sync::Notify;
 use tokio::task::coop::unconstrained;
 use tokio::time::{Instant, timeout_at};
 
-use crate::backend::{self, Backend};
+use crate::backend::{self, Backend, Drain};
 use crate::errors::SerialError;
 use crate::lock;
 use crate::settings::{self, Settings};
@@ -310,10 +310,31 @@ impl PortCore {
         .await
     }
 
-    // ponytail: on POSIX the flush is tcdrain, which blocks one runtime worker until output is sent; move it to spawn_blocking if ports with slow baud rates stall other ports
     pub async fn flush(&self) -> Result<(), SerialError> {
         let _turn = self.write_turn.lock().await;
-        self.until_closed(poll_fn(|cx| self.poll_flush(cx))).await
+        self.until_closed(async {
+            match self.with_backend(|port| port.drain_handle())? {
+                Drain::Done => Ok(()),
+                #[cfg(unix)]
+                Drain::Fd(fd) => tokio::task::spawn_blocking(move || {
+                    nix::sys::termios::tcdrain(&fd)
+                        .map_err(|errno| SerialError::from(std::io::Error::from(errno)))
+                })
+                .await
+                .map_err(|err| SerialError::Os {
+                    errno: None,
+                    message: format!("flush failed: {err}"),
+                })?,
+                #[cfg(not(unix))]
+                Drain::PollOutWaiting => {
+                    while self.out_waiting()? > 0 {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                    Ok(())
+                }
+            }
+        })
+        .await
     }
 
     pub async fn send_break(&self, duration: Duration) -> Result<(), SerialError> {
@@ -468,16 +489,6 @@ impl PortCore {
             Poll::Ready(result) => Poll::Ready(result.map_err(SerialError::from)),
             Poll::Pending => Poll::Pending,
         }
-    }
-
-    fn poll_flush(&self, cx: &mut Context<'_>) -> Poll<Result<(), SerialError>> {
-        let mut slot = lock(&self.backend);
-        let Some(port) = slot.as_mut() else {
-            return Poll::Ready(Err(SerialError::NotOpen));
-        };
-        Pin::new(port.as_mut())
-            .poll_flush(cx)
-            .map_err(SerialError::from)
     }
 }
 
@@ -677,6 +688,16 @@ mod tests {
         });
         written?;
         assert_eq!(read?, b"ab");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn flush_completes_after_a_write_and_fails_on_a_closed_port() -> Result<(), SerialError> {
+        let (a, _b, _) = open_pair(|_| {})?;
+        a.write(b"abc").await?;
+        a.flush().await?;
+        a.close();
+        assert_eq!(a.flush().await, Err(SerialError::NotOpen));
         Ok(())
     }
 }
