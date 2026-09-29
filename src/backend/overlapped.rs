@@ -250,22 +250,19 @@ impl Port {
         }
         // SAFETY: `handle` is a freshly opened port that nothing else owns.
         let file = unsafe { OwnedHandle::from_raw_handle(handle) };
-        // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): 4096-byte driver queues.
+        // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): 4096-byte driver queues,
+        // result ignored, as a driver that rejects the size still works with its default queues.
         // SAFETY: `handle` is open and owned by `file`.
-        check(unsafe { SetupComm(handle, 4096, 4096) })?;
+        unsafe { SetupComm(handle, 4096, 4096) };
         // ReadFile returns at once with whatever is buffered; timeouts are kept by the caller.
         let timeouts = COMMTIMEOUTS {
             ReadIntervalTimeout: u32::MAX,
             ..COMMTIMEOUTS::default()
         };
-        // SAFETY: `handle` is open and owned by `file`.
-        if unsafe { SetCommTimeouts(handle, &timeouts) } == 0 {
-            return Err(last_error());
-        }
         // SAFETY: as above.
-        if unsafe { SetCommMask(handle, EV_RXCHAR) } == 0 {
-            return Err(last_error());
-        }
+        check(unsafe { SetCommTimeouts(handle, &timeouts) })?;
+        // SAFETY: as above.
+        check(unsafe { SetCommMask(handle, EV_RXCHAR) })?;
         Ok(Self {
             readiness: Op::new(handle)?,
             read: Op::new(handle)?,
