@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 from collections.abc import Callable, Coroutine
 from typing import Any
 
@@ -26,7 +27,13 @@ def real_pair(request: pytest.FixtureRequest) -> tuple[str, str]:
     port_b = request.config.getoption("--port-b")
     if not port_a or not port_b:
         pytest.skip("no connected port pair given (--port-a/--port-b)")
-    return str(port_a), str(port_b)
+    names = str(port_a), str(port_b)
+    deadline = time.monotonic() + 5
+    while any(os.path.isabs(n) and not os.path.exists(n) for n in names):
+        if time.monotonic() > deadline:
+            break
+        time.sleep(0.05)
+    return names
 
 
 @pytest.fixture(params=["asyncio", "rsloop"])
