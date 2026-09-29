@@ -369,10 +369,10 @@ def test_read_until_accepts_bytes_like(ports: tuple[Serial, Serial]) -> None:
     assert b.read_until(memoryview(b";")) == b"cd;"
 
 
-def test_text_io_over_a_port(mock_pair: tuple[str, str]) -> None:
+def test_text_io_over_a_port(ports: tuple[Serial, Serial]) -> None:
     """Read and write lines through io.TextIOWrapper over a port."""
-    a = Serial(mock_pair[0], timeout=1)
-    b = Serial(mock_pair[1], timeout=0.1)
+    a, b = ports
+    b.timeout = 0.1
     text = io.TextIOWrapper(io.BufferedRWPair(b, b), newline="\n")  # type: ignore[type-var]
     a.write(b"hello\n")
     assert text.readline() == "hello\n"
@@ -382,4 +382,3 @@ def test_text_io_over_a_port(mock_pair: tuple[str, str]) -> None:
     assert not b.closed
     text.close()
     assert b.closed
-    a.close()

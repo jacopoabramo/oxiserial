@@ -306,15 +306,16 @@ class Serial(SerialBase):
 
     Notes
     -----
-    The `io` module uses [`readable`][oxiserial.Serial.readable],
+    [`io.TextIOWrapper`](https://docs.python.org/3/library/io.html#io.TextIOWrapper)
+    over `io.BufferedRWPair(ser, ser)` uses
+    [`readable`][oxiserial.Serial.readable],
     [`writable`][oxiserial.Serial.writable],
     [`closed`][oxiserial.Serial.closed],
     [`readinto`][oxiserial.Serial.readinto], [`write`][oxiserial.Serial.write]
-    and [`close`][oxiserial.SerialBase.close], so
-    [`io.TextIOWrapper`](https://docs.python.org/3/library/io.html#io.TextIOWrapper)
-    can wrap the port as `io.TextIOWrapper(io.BufferedRWPair(ser, ser))`.
-    `io.BufferedReader` and `io.BufferedWriter` also call
-    [`seekable`][oxiserial.Serial.seekable].
+    and [`close`][oxiserial.SerialBase.close], and calls `tell` if the port has
+    it. Over `io.BufferedReader(ser)` or `io.BufferedWriter(ser)` it also calls
+    [`seekable`][oxiserial.Serial.seekable], and `io.BufferedReader` calls
+    [`flush`][oxiserial.Serial.flush].
     """
 
     def __init__(
