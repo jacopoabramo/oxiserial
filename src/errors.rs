@@ -43,11 +43,11 @@ impl SerialError {
 
 impl std::fmt::Display for SerialError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
         match self {
             Self::Os { message, .. } | Self::Timeout(message) | Self::Value(message) => {
                 f.write_str(message)
             }
+            // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): the next three messages.
             Self::NotOpen => f.write_str("Attempting to use a port that is not open"),
             Self::AlreadyOpen => f.write_str("Port is already open."),
             Self::NoPort => f.write_str("Port must be configured before it can be used."),

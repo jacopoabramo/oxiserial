@@ -31,9 +31,9 @@ pub struct ListPortInfo {
     interface: Option<String>,
 }
 
-/// Bus number pyserial shows on Windows: the last `USBROOT(n)` index plus one.
+/// Bus number shown on Windows: the last `USBROOT(n)` index plus one.
 fn windows_bus_number(bus_id: &str) -> Option<u32> {
-    // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): USBROOT(n) is shown as bus n + 1.
+    // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): USBROOT bus number.
     const MARKER: &str = "USBROOT(";
     let digits: String = bus_id[bus_id.rfind(MARKER)? + MARKER.len()..]
         .chars()
@@ -51,7 +51,7 @@ fn format_location(location: &Location) -> String {
 
 /// Natural-sort key: each digit run is one integer, each other run its UTF-8 bytes.
 fn natural_key(text: &str) -> Vec<Vec<u128>> {
-    // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): port ordering follows numsplit.
+    // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): numsplit key.
     let mut key = Vec::new();
     let mut rest = text;
     while let Some(first) = rest.chars().next() {
@@ -91,6 +91,7 @@ impl ListPortInfo {
     #[pyo3(signature = (device, skip_link_detection = false))]
     fn new(device: String, skip_link_detection: bool) -> Self {
         let _ = skip_link_detection;
+        // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): defaults and name.
         let name = Path::new(&device)
             .file_name()
             .map_or_else(|| device.clone(), |n| n.to_string_lossy().into_owned());
@@ -160,6 +161,7 @@ impl ListPortInfo {
     }
 
     fn __lt__(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
+        // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): message.
         match other.extract::<PyRef<'_, Self>>() {
             Ok(other) => Ok(natural_key(&self.device) < natural_key(&other.device)),
             Err(_) => Err(PyTypeError::new_err(format!(
@@ -169,6 +171,7 @@ impl ListPortInfo {
         }
     }
 
+    // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): __str__, __eq__ and __hash__.
     fn __str__(&self) -> String {
         format!("{} - {}", self.device, self.description)
     }

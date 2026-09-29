@@ -52,7 +52,7 @@ impl Drop for BreakGuard<'_> {
 /// On POSIX, control lines of a pty raise EINVAL or ENOTTY; pyserial ignores those on open.
 #[cfg(unix)]
 fn ignore_unsupported(result: Result<(), SerialError>) -> Result<(), SerialError> {
-    // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): EINVAL and ENOTTY on the control lines are ignored on open.
+    // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): errors ignored on open.
     match result {
         Err(SerialError::Os { errno: Some(e), .. }) if e == libc::EINVAL || e == libc::ENOTTY => {
             Ok(())
@@ -162,7 +162,7 @@ impl PortCore {
         if slot.is_some() {
             return Err(SerialError::AlreadyOpen);
         }
-        // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): DTR, then RTS, then flush the input buffer on open.
+        // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): open order.
         let mut opened = backend::open(&port, &settings)?;
         restore_lines(opened.as_mut(), &settings, rts, dtr)?;
         opened.clear_buffers(true, false)?;
@@ -302,7 +302,7 @@ impl PortCore {
                     Some(at) => {
                         timeout_at(at, poll_fn(|cx| self.poll_write_some(cx, &data[written..])))
                             .await
-                            // Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
+                            // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): message.
                             .map_err(|_| SerialError::Timeout("Write timeout".into()))??
                     }
                 };
