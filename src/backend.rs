@@ -6,6 +6,8 @@ use crate::settings::Settings;
 #[cfg(feature = "test-backend")]
 pub mod mock;
 pub mod native;
+#[cfg(windows)]
+mod overlapped;
 
 /// What `PortCore::flush` waits on once the backend lock is released.
 pub enum Drain {
@@ -35,6 +37,11 @@ pub trait Backend: AsyncRead + AsyncWrite + Unpin + Send + 'static {
     fn set_break_state(&self, on: bool) -> Result<(), SerialError>;
     fn fileno(&self) -> Option<i32>;
     fn drain_handle(&self) -> Result<Drain, SerialError>;
+
+    /// Cancels a write left in progress by an abandoned `poll_write` and returns the bytes it sent.
+    fn cancel_write(&mut self) -> Result<usize, SerialError> {
+        Ok(0)
+    }
 }
 
 /// Opens `port` and applies `settings`.

@@ -1,26 +1,35 @@
-use tokio_serial::{
-    ClearBuffer, DataBits, FlowControl, SerialPort, SerialPortBuilderExt, SerialStream,
-};
+use serialport::{ClearBuffer, DataBits, FlowControl, SerialPort};
+#[cfg(unix)]
+use tokio_serial::{SerialPortBuilderExt, SerialStream};
 
 use crate::backend::{Backend, Drain};
 use crate::errors::SerialError;
+#[cfg(unix)]
 use crate::runtime::runtime;
 use crate::settings::{Parity, Settings, StopBits};
 
+#[cfg(unix)]
+type Port = SerialStream;
+#[cfg(windows)]
+use crate::backend::overlapped::Port;
+
 pub fn open(port: &str, settings: &Settings) -> Result<Box<dyn Backend>, SerialError> {
-    // The stream registers with the reactor of whichever runtime is current.
-    let _context = runtime()?.enter();
-    let builder = tokio_serial::new(port, settings.baudrate);
     #[cfg(unix)]
-    let builder = builder.exclusive(settings.exclusive == Some(true));
-    let mut stream = builder
-        .open_native_async()
-        .map_err(|err| SerialError::open_failed(port, err))?;
+    let mut stream = {
+        // The stream registers with the reactor of whichever runtime is current.
+        let _context = runtime()?.enter();
+        tokio_serial::new(port, settings.baudrate)
+            .exclusive(settings.exclusive == Some(true))
+            .open_native_async()
+            .map_err(|err| SerialError::open_failed(port, err.into()))?
+    };
+    #[cfg(windows)]
+    let mut stream = Port::open(port).map_err(|err| SerialError::open_failed(port, err.into()))?;
     stream.configure(settings)?;
     Ok(Box::new(stream))
 }
 
-impl Backend for SerialStream {
+impl Backend for Port {
     fn configure(&mut self, settings: &Settings) -> Result<(), SerialError> {
         #[cfg(all(unix, not(target_os = "linux")))]
         if matches!(settings.parity, Parity::Mark | Parity::Space) {
@@ -37,16 +46,16 @@ impl Backend for SerialStream {
             _ => DataBits::Eight,
         })?;
         self.set_parity(match settings.parity {
-            Parity::Even => tokio_serial::Parity::Even,
-            Parity::Odd => tokio_serial::Parity::Odd,
-            _ => tokio_serial::Parity::None,
+            Parity::Even => serialport::Parity::Even,
+            Parity::Odd => serialport::Parity::Odd,
+            _ => serialport::Parity::None,
         })?;
         self.set_stop_bits(match settings.stopbits {
-            StopBits::One => tokio_serial::StopBits::One,
+            StopBits::One => serialport::StopBits::One,
             // Windows drivers may reject two stop bits with 1.5 requested, so `platform::apply` sets it directly.
             #[cfg(windows)]
-            StopBits::OnePointFive => tokio_serial::StopBits::One,
-            _ => tokio_serial::StopBits::Two,
+            StopBits::OnePointFive => serialport::StopBits::One,
+            _ => serialport::StopBits::Two,
         })?;
         // serialport has one flow-control mode, so software flow control is added by `platform::apply`.
         self.set_flow_control(if settings.rtscts {
@@ -97,14 +106,14 @@ impl Backend for SerialStream {
             (false, true) => ClearBuffer::Output,
             (false, false) => return Ok(()),
         };
-        Ok(SerialPort::clear(self, which)?)
+        Ok(self.clear(which)?)
     }
 
     fn set_break_state(&self, on: bool) -> Result<(), SerialError> {
         if on {
-            Ok(SerialPort::set_break(self)?)
+            Ok(self.set_break()?)
         } else {
-            Ok(SerialPort::clear_break(self)?)
+            Ok(self.clear_break()?)
         }
     }
 
@@ -132,6 +141,11 @@ impl Backend for SerialStream {
         {
             Ok(Drain::PollOutWaiting)
         }
+    }
+
+    #[cfg(windows)]
+    fn cancel_write(&mut self) -> Result<usize, SerialError> {
+        Ok(self.abort_write()?)
     }
 }
 
@@ -196,31 +210,37 @@ mod platform {
 mod platform {
     use std::os::windows::io::AsRawHandle;
 
-    use tokio_serial::SerialStream;
     use windows_sys::Win32::Devices::Communication::{
         DCB, GetCommState, MARKPARITY, ONE5STOPBITS, SPACEPARITY, SetCommState,
     };
 
+    use super::Port;
     use crate::errors::SerialError;
     use crate::settings::{Parity, Settings, StopBits};
 
     // Bit positions of the DCB flags, which windows-sys exposes only as one packed u32.
+    const F_BINARY: u32 = 1;
     const F_PARITY: u32 = 1 << 1;
     const F_OUTX_DSR_FLOW: u32 = 1 << 3;
     const F_DTR_CONTROL_MASK: u32 = 0b11 << 4;
     const F_DTR_CONTROL_ENABLE: u32 = 1 << 4;
     const F_DTR_CONTROL_HANDSHAKE: u32 = 2 << 4;
+    const F_DSR_SENSITIVITY: u32 = 1 << 6;
     const F_OUT_X: u32 = 1 << 8;
     const F_IN_X: u32 = 1 << 9;
+    const F_ERROR_CHAR: u32 = 1 << 10;
+    const F_NULL: u32 = 1 << 11;
     const F_RTS_CONTROL_MASK: u32 = 0b11 << 12;
     const F_RTS_CONTROL_HANDSHAKE: u32 = 2 << 12;
+    const F_ABORT_ON_ERROR: u32 = 1 << 14;
 
-    /// Adds mark and space parity, 1.5 stop bits, software flow control and DSR/DTR and RTS handshaking.
-    pub fn apply(stream: &SerialStream, settings: &Settings) -> Result<(), SerialError> {
+    /// Adds binary mode, mark and space parity, 1.5 stop bits, software flow control and DSR/DTR and RTS handshaking.
+    pub fn apply(stream: &Port, settings: &Settings) -> Result<(), SerialError> {
         let handle = stream.as_raw_handle();
-        // SAFETY: DCB is plain data; zeroed is a valid value before GetCommState fills it.
-        let mut dcb: DCB = unsafe { std::mem::zeroed() };
-        dcb.DCBlength = std::mem::size_of::<DCB>() as u32;
+        let mut dcb = DCB {
+            DCBlength: std::mem::size_of::<DCB>() as u32,
+            ..DCB::default()
+        };
         // SAFETY: `handle` is the open COM port owned by `stream`.
         if unsafe { GetCommState(handle, &mut dcb) } == 0 {
             return Err(std::io::Error::last_os_error().into());
@@ -240,7 +260,17 @@ mod platform {
             dcb.StopBits = ONE5STOPBITS;
         }
         // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): DCB flag choices.
-        dcb._bitfield &= !(F_OUTX_DSR_FLOW | F_DTR_CONTROL_MASK | F_OUT_X | F_IN_X);
+        dcb._bitfield &= !(F_OUTX_DSR_FLOW
+            | F_DTR_CONTROL_MASK
+            | F_DSR_SENSITIVITY
+            | F_OUT_X
+            | F_IN_X
+            | F_ERROR_CHAR
+            | F_NULL
+            | F_ABORT_ON_ERROR);
+        dcb._bitfield |= F_BINARY;
+        dcb.XonChar = 0x11;
+        dcb.XoffChar = 0x13;
         dcb._bitfield |= if settings.dsrdtr {
             F_OUTX_DSR_FLOW | F_DTR_CONTROL_HANDSHAKE
         } else {

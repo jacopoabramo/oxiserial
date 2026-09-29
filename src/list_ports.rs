@@ -4,8 +4,7 @@ use std::path::Path;
 use pyo3::exceptions::{PyIndexError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
-use serialport::Location;
-use tokio_serial::{SerialPortInfo, SerialPortType};
+use serialport::{Location, SerialPortInfo, SerialPortType};
 
 use crate::errors::SerialError;
 
@@ -195,7 +194,7 @@ impl ListPortInfo {
 pub fn comports(py: Python<'_>, include_links: bool) -> PyResult<Vec<ListPortInfo>> {
     let _ = include_links;
     let ports = py
-        .detach(tokio_serial::available_ports)
+        .detach(serialport::available_ports)
         .map_err(SerialError::from)?;
     Ok(ports.into_iter().map(ListPortInfo::from_info).collect())
 }

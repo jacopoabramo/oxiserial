@@ -32,12 +32,19 @@ impl SerialError {
         }
     }
 
-    pub fn open_failed(port: &str, err: tokio_serial::Error) -> Self {
-        // Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
-        Self::Os {
-            errno: None,
-            message: format!("could not open port '{port}': {}", err.description),
-        }
+    /// Wraps a failure to open `port` in pyserial's message, keeping its errno.
+    pub fn open_failed(port: &str, err: SerialError) -> Self {
+        let errno = match &err {
+            Self::Os { errno, .. } => *errno,
+            _ => None,
+        };
+        // Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt), which quotes the name only on Windows.
+        let message = match errno {
+            _ if cfg!(windows) => format!("could not open port '{port}': {err}"),
+            Some(errno) => format!("could not open port {port}: [Errno {errno}] {err}"),
+            None => format!("could not open port {port}: {err}"),
+        };
+        Self::Os { errno, message }
     }
 }
 
@@ -77,18 +84,21 @@ fn errno_of(description: &str) -> Option<i32> {
     }
     // Errors that serialport converts from nix carry only nix's description text.
     #[cfg(unix)]
-    for errno in [nix::errno::Errno::EINVAL, nix::errno::Errno::ENOTTY] {
-        if description == errno.desc() {
-            return Some(errno as i32);
-        }
+    {
+        use nix::errno::Errno;
+        (1..256).find(|&code| {
+            let errno = Errno::from_raw(code);
+            errno != Errno::UnknownErrno && errno.desc() == description
+        })
     }
+    #[cfg(not(unix))]
     None
 }
 
-impl From<tokio_serial::Error> for SerialError {
-    fn from(err: tokio_serial::Error) -> Self {
+impl From<serialport::Error> for SerialError {
+    fn from(err: serialport::Error) -> Self {
         match err.kind {
-            tokio_serial::ErrorKind::InvalidInput => Self::Value(err.description),
+            serialport::ErrorKind::InvalidInput => Self::Value(err.description),
             _ => Self::Os {
                 errno: errno_of(&err.description),
                 message: err.description,
@@ -130,7 +140,7 @@ mod tests {
     #[test]
     fn serialport_errors_recover_the_errno_pyserial_checks() {
         let description = nix::errno::Errno::ENOTTY.desc();
-        let err = tokio_serial::Error::new(tokio_serial::ErrorKind::Unknown, description);
+        let err = serialport::Error::new(serialport::ErrorKind::Unknown, description);
         assert_eq!(
             SerialError::from(err),
             SerialError::Os {
@@ -138,5 +148,17 @@ mod tests {
                 message: description.into()
             }
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opening_a_missing_port_keeps_enoent() {
+        let path = "/dev/oxiserial-does-not-exist";
+        let result = crate::backend::native::open(path, &crate::settings::Settings::default());
+        assert!(matches!(
+            result.err(),
+            Some(SerialError::Os { errno: Some(libc::ENOENT), message })
+                if message.starts_with("could not open port /dev/oxiserial-does-not-exist: [Errno 2]")
+        ));
     }
 }

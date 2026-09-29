@@ -49,6 +49,16 @@ impl Drop for BreakGuard<'_> {
     }
 }
 
+/// Cancels a write the backend still has in progress when `PortCore::write` ends early.
+struct CancelWrite<'a>(&'a PortCore);
+
+impl Drop for CancelWrite<'_> {
+    fn drop(&mut self) {
+        // The write already ended with its own result or was cancelled; no caller is left for this one.
+        let _ = self.0.cancel_write();
+    }
+}
+
 /// On POSIX, control lines of a pty raise EINVAL or ENOTTY; pyserial ignores those on open.
 #[cfg(unix)]
 fn ignore_unsupported(result: Result<(), SerialError>) -> Result<(), SerialError> {
@@ -243,6 +253,13 @@ impl PortCore {
         self.with_backend(|port| port.clear_buffers(false, true))
     }
 
+    fn cancel_write(&self) -> Result<usize, SerialError> {
+        match lock(&self.backend).as_mut() {
+            Some(port) => port.cancel_write(),
+            None => Ok(0),
+        }
+    }
+
     pub fn fileno(&self) -> Result<Option<i32>, SerialError> {
         self.with_backend(|port| Ok(port.fileno()))
     }
@@ -286,19 +303,22 @@ impl PortCore {
 
     pub async fn write(&self, data: &[u8]) -> Result<usize, SerialError> {
         let _turn = self.write_turn.lock().await;
+        // Declared after `_turn`, so it cancels a leftover write before the next writer starts.
+        let _cancel = CancelWrite(self);
         self.until_closed(async {
-            let deadline = settings::duration(self.settings().write_timeout)
-                .and_then(|t| Instant::now().checked_add(t));
+            let write_timeout = self.settings().write_timeout;
+            let deadline =
+                settings::duration(write_timeout).and_then(|t| Instant::now().checked_add(t));
             let mut written = 0;
             while written < data.len() {
                 let n = match deadline {
-                    None => poll_fn(|cx| self.poll_write_some(cx, &data[written..])).await?,
-                    Some(at) if at <= Instant::now() => {
+                    _ if write_timeout == Some(0.0) => {
                         match poll_once(|cx| self.poll_write_some(cx, &data[written..])).await {
                             Some(result) => result?,
-                            None => return Ok(written),
+                            None => return Ok(written + self.cancel_write()?),
                         }
                     }
+                    None => poll_fn(|cx| self.poll_write_some(cx, &data[written..])).await?,
                     Some(at) => {
                         timeout_at(at, poll_fn(|cx| self.poll_write_some(cx, &data[written..])))
                             .await
