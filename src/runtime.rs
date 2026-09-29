@@ -18,7 +18,7 @@ fn start() -> Result<Owned, SerialError> {
         .enable_all()
         .build()
         .map_err(|err| SerialError::Os {
-            errno: err.raw_os_error(),
+            code: err.raw_os_error(),
             message: format!("failed to start the tokio runtime: {err}"),
         })?;
     Ok(Owned {

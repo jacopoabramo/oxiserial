@@ -1,5 +1,6 @@
 import _thread
 import array
+import errno
 import io
 import sys
 import threading
@@ -200,16 +201,18 @@ def test_write_accepts_bytes_like_and_str(ports: tuple[Serial, Serial]) -> None:
         a.write("\ud800")
 
 
-def test_write_accepts_whatever_bytearray_accepts(ports: tuple[Serial, Serial]) -> None:
-    """Accept in write anything that bytearray accepts and reject the rest."""
+def test_write_accepts_buffers_and_rejects_ints(ports: tuple[Serial, Serial]) -> None:
+    """Send the raw bytes of any buffer and reject ints and iterables of ints."""
     a, b = ports
-    assert a.write([2, 3]) == 2  # type: ignore[arg-type]
     assert a.write(array.array("H", [1])) == 2
     assert a.write(memoryview(b"abcd").cast("I")) == 4
-    assert a.write(5) == 5  # type: ignore[arg-type]
-    assert b.read(13) == b"\x02\x03\x01\x00abcd" + b"\x00" * 5
-    with pytest.raises(TypeError):
-        a.write(object())  # type: ignore[arg-type]
+    assert b.read(6) == b"\x01\x00abcd"
+    for data in (5, [2, 3], (2, 3), iter([2, 3]), object()):
+        with pytest.raises(TypeError, match=type(data).__name__):
+            a.write(data)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="list"):
+        b.read_until([10])  # type: ignore[arg-type]
+    assert b.in_waiting == 0
 
 
 def test_flush_returns_after_a_write(ports: tuple[Serial, Serial]) -> None:
@@ -329,6 +332,17 @@ def test_opening_a_missing_port_reports_the_errno() -> None:
     with pytest.raises(SerialException) as info:
         Serial("/dev/oxiserial-does-not-exist")
     assert info.value.errno is not None
+
+
+def test_opening_a_missing_port_reports_the_windows_error() -> None:
+    """Report the Windows error code once, with its errno, for a missing port."""
+    if sys.platform != "win32":
+        pytest.skip("the Windows error code is Windows only")
+    with pytest.raises(SerialException) as info:
+        Serial("COM250")
+    assert info.value.winerror == 2
+    assert info.value.errno == errno.ENOENT
+    assert "(os error" not in str(info.value)
 
 
 def test_read_all_portstr_and_repr(

@@ -18,9 +18,13 @@ pub struct EndState {
     pub dtr: bool,
     pub break_on: bool,
     pub write_blocked: bool,
+    /// Reads and writes fail as they do once the device is unplugged.
+    pub gone: bool,
     pub baudrate: u32,
     /// Times `configure` was called.
     pub configure_calls: usize,
+    /// Times RTS or DTR was written.
+    pub line_writes: usize,
     /// Times RTS or DTR was written high.
     pub high_writes: usize,
     write_waker: Option<Waker>,
@@ -33,8 +37,10 @@ impl Default for EndState {
             dtr: true,
             break_on: false,
             write_blocked: false,
+            gone: false,
             baudrate: 0,
             configure_calls: 0,
+            line_writes: 0,
             high_writes: 0,
             write_waker: None,
         }
@@ -44,11 +50,13 @@ impl Default for EndState {
 impl EndState {
     fn set_rts(&mut self, level: bool) {
         self.rts = level;
+        self.line_writes += 1;
         self.high_writes += usize::from(level);
     }
 
     fn set_dtr(&mut self, level: bool) {
         self.dtr = level;
+        self.line_writes += 1;
         self.high_writes += usize::from(level);
     }
 }
@@ -65,6 +73,15 @@ type Registry = Mutex<HashMap<String, (Arc<Mutex<PairState>>, usize)>>;
 fn registry() -> &'static Registry {
     static REGISTRY: OnceLock<Registry> = OnceLock::new();
     REGISTRY.get_or_init(Registry::default)
+}
+
+/// The error of a read or write on an unplugged device.
+fn gone() -> io::Error {
+    #[cfg(unix)]
+    let code = libc::EIO;
+    #[cfg(windows)]
+    let code = windows_sys::Win32::Foundation::ERROR_DEVICE_REMOVED as i32;
+    io::Error::from_raw_os_error(code)
 }
 
 /// A baud rate `configure` refuses, standing in for a setting the device rejects.
@@ -123,6 +140,9 @@ impl AsyncRead for MockPort {
     ) -> Poll<io::Result<()>> {
         let mut guard = lock(&self.pair);
         let state = &mut *guard;
+        if state.ends[self.side].gone {
+            return Poll::Ready(Err(gone()));
+        }
         let inbox = &mut state.inbox[self.side];
         if inbox.is_empty() {
             state.read_waker[self.side] = Some(cx.waker().clone());
@@ -145,6 +165,9 @@ impl AsyncWrite for MockPort {
         let mut guard = lock(&self.pair);
         let state = &mut *guard;
         let end = &mut state.ends[self.side];
+        if end.gone {
+            return Poll::Ready(Err(gone()));
+        }
         if end.write_blocked {
             end.write_waker = Some(cx.waker().clone());
             return Poll::Pending;

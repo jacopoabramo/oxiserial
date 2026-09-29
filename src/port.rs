@@ -59,41 +59,6 @@ impl Drop for CancelWrite<'_> {
     }
 }
 
-/// On POSIX, control lines of a pty raise EINVAL or ENOTTY; pyserial ignores those on open.
-#[cfg(unix)]
-fn ignore_unsupported(result: Result<(), SerialError>) -> Result<(), SerialError> {
-    // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): errors ignored on open.
-    match result {
-        Err(SerialError::Os { errno: Some(e), .. }) if e == libc::EINVAL || e == libc::ENOTTY => {
-            Ok(())
-        }
-        other => other,
-    }
-}
-
-#[cfg(not(unix))]
-fn ignore_unsupported(result: Result<(), SerialError>) -> Result<(), SerialError> {
-    result
-}
-
-/// Writes the stored DTR and RTS levels, except for a line the flow control setting drives.
-///
-/// Opening a device may set the lines itself, so they are written again after open.
-fn restore_lines(
-    port: &mut dyn Backend,
-    settings: &Settings,
-    rts: bool,
-    dtr: bool,
-) -> Result<(), SerialError> {
-    if !settings.dsrdtr {
-        ignore_unsupported(port.set_dtr(dtr))?;
-    }
-    if !settings.rtscts {
-        ignore_unsupported(port.set_rts(rts))?;
-    }
-    Ok(())
-}
-
 /// With an inter-byte timeout and data already received, the deadline moves to one gap from now.
 fn next_deadline(
     overall: Option<Instant>,
@@ -174,8 +139,7 @@ impl PortCore {
             return Err(SerialError::AlreadyOpen);
         }
         // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): open order.
-        let mut opened = backend::open(&port, &settings, rts, dtr)?;
-        restore_lines(opened.as_mut(), &settings, rts, dtr)?;
+        let opened = backend::open(&port, &settings, rts, dtr)?;
         opened.clear_buffers(true, false)?;
         *slot = Some(opened);
         Ok(())
@@ -224,13 +188,43 @@ impl PortCore {
     }
 
     pub fn set_rts(&self, level: bool) -> Result<(), SerialError> {
-        lock(&self.state).rts = level;
-        self.if_open(|port| port.set_rts(level))
+        self.set_line(
+            |state| {
+                state.rts = level;
+                state.settings.rtscts
+            },
+            |port| port.set_rts(level),
+        )
     }
 
     pub fn set_dtr(&self, level: bool) -> Result<(), SerialError> {
-        lock(&self.state).dtr = level;
-        self.if_open(|port| port.set_dtr(level))
+        self.set_line(
+            |state| {
+                state.dtr = level;
+                // POSIX has no DSR/DTR flow control, so there DTR stays the caller's to set.
+                state.settings.dsrdtr && cfg!(windows)
+            },
+            |port| port.set_dtr(level),
+        )
+    }
+
+    /// Stores a line level with `store`, which returns whether flow control drives the line,
+    /// and writes it with `write` only when it does not.
+    ///
+    /// A line under flow control belongs to the driver, which may reject writes to it; the
+    /// stored level is applied by the configure that turns flow control off.
+    fn set_line(
+        &self,
+        store: impl FnOnce(&mut State) -> bool,
+        write: impl FnOnce(&mut dyn Backend) -> Result<(), SerialError>,
+    ) -> Result<(), SerialError> {
+        // Taken first, as in `update_settings`, so flow control cannot change before the write.
+        let mut slot = lock(&self.backend);
+        let driven = store(&mut lock(&self.state));
+        match slot.as_mut() {
+            Some(port) if !driven => write(port.as_mut()),
+            _ => Ok(()),
+        }
     }
 
     pub fn set_break_condition(&self, on: bool) -> Result<(), SerialError> {
@@ -378,7 +372,7 @@ impl PortCore {
                 })
                 .await
                 .map_err(|err| SerialError::Os {
-                    errno: None,
+                    code: None,
                     message: format!("flush failed: {err}"),
                 })?,
                 #[cfg(not(unix))]
@@ -427,6 +421,9 @@ impl PortCore {
     }
 
     /// Runs `op`, ending it with `NotOpen` if the port is closed before it finishes.
+    ///
+    /// When `op` fails because the device is gone, the port is closed, so later calls raise
+    /// `NotOpen` rather than failing on a handle that cannot recover.
     async fn until_closed<T>(
         &self,
         op: impl Future<Output = Result<T, SerialError>>,
@@ -439,7 +436,12 @@ impl PortCore {
             return Err(SerialError::NotOpen);
         }
         tokio::select! {
-            result = op => result,
+            result = op => {
+                if result.as_ref().is_err_and(SerialError::device_gone) {
+                    self.close();
+                }
+                result
+            }
             () = closed => Err(SerialError::NotOpen),
         }
     }
@@ -597,6 +599,41 @@ mod tests {
         assert_eq!(
             mock::update(&a_name, |end| (end.rts, end.dtr, end.high_writes)),
             Some((false, false, 0))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn lines_under_flow_control_are_stored_and_applied_when_it_is_turned_off()
+    -> Result<(), SerialError> {
+        let (a, _b, a_name) = open_pair(|s| {
+            s.rtscts = true;
+            s.dsrdtr = true;
+        })?;
+        let lines = || mock::update(&a_name, |end| (end.rts, end.dtr));
+        a.set_rts(false)?;
+        a.set_dtr(false)?;
+        assert!(!a.rts() && !a.dtr());
+        // DTR is held back only on Windows; POSIX has no DSR/DTR flow control.
+        assert_eq!(lines(), Some((true, cfg!(windows))));
+        a.update_settings(|s| {
+            s.rtscts = false;
+            s.dsrdtr = false;
+        })?;
+        assert_eq!(lines(), Some((false, false)));
+        Ok(())
+    }
+
+    #[test]
+    fn opening_writes_each_line_once_at_the_stored_level() -> Result<(), SerialError> {
+        let (a_name, _) = mock::pair();
+        let a = PortCore::new(Some(a_name.clone()), Settings::default());
+        a.set_rts(false)?;
+        a.set_dtr(false)?;
+        a.open()?;
+        assert_eq!(
+            mock::update(&a_name, |end| (end.line_writes, end.high_writes)),
+            Some((2, 0))
         );
         Ok(())
     }
@@ -770,6 +807,46 @@ mod tests {
             b.close();
         });
         assert_eq!(read, Err(SerialError::NotOpen));
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_read_that_finds_the_device_gone_wakes_a_blocked_write() -> Result<(), SerialError> {
+        let (a, _b, a_name) = open_pair(|_| {})?;
+        mock::update(&a_name, |end| end.write_blocked = true);
+        let joined = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(a.write(b"x"), async {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                mock::update(&a_name, |end| end.gone = true);
+                a.read(1).await
+            })
+        })
+        .await;
+        let Ok((written, read)) = joined else {
+            return Err(SerialError::Timeout("the blocked write never woke".into()));
+        };
+        assert!(matches!(read, Err(SerialError::Os { .. })));
+        assert_eq!(written, Err(SerialError::NotOpen));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_removed_device_closes_the_port() -> Result<(), SerialError> {
+        let (a_name, b_name) = mock::pair();
+        let a = PortCore::new(Some(a_name.clone()), Settings::default());
+        let b = PortCore::new(Some(b_name.clone()), Settings::default());
+        a.open()?;
+        b.open()?;
+        mock::update(&a_name, |end| end.gone = true);
+        mock::update(&b_name, |end| end.gone = true);
+
+        assert!(matches!(a.read(1).await, Err(SerialError::Os { .. })));
+        assert!(!a.is_open());
+        assert_eq!(a.read(1).await, Err(SerialError::NotOpen));
+
+        assert!(matches!(b.write(b"x").await, Err(SerialError::Os { .. })));
+        assert!(!b.is_open());
+        assert_eq!(b.write(b"x").await, Err(SerialError::NotOpen));
         Ok(())
     }
 

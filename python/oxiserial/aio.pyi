@@ -156,11 +156,17 @@ class Serial(SerialBase):
         for a disconnected device are raised through the future.
         """
     def read_until(
-        self, expected: Buffer = b"\n", size: int | None = None
+        self, expected: Buffer | str | None = b"\n", size: int | None = None
     ) -> Future[bytes]:
         """Read until `expected` or `size` bytes.
 
         See [`Serial.read_until`][oxiserial.Serial.read_until].
+
+        Raises
+        ------
+        TypeError
+            If `expected` is not `bytes`, `str` or an object with the buffer
+            protocol. This is raised by the call, not through the future.
         """
     def readline(self, size: int = -1) -> Future[bytes]:
         """Read one line.
@@ -177,6 +183,12 @@ class Serial(SerialBase):
 
         See [`Serial.write`][oxiserial.Serial.write]. A closed port and an
         expired `write_timeout` are reported through the future.
+
+        Raises
+        ------
+        TypeError
+            If `data` is not `bytes`, `str` or an object with the buffer
+            protocol. This is raised by the call, not through the future.
         """
     def flush(self) -> Future[None]:
         """Wait until written data is transmitted.

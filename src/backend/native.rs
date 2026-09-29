@@ -1,6 +1,6 @@
-use serialport::{ClearBuffer, SerialPort};
+use serialport::ClearBuffer;
 #[cfg(unix)]
-use serialport::{DataBits, FlowControl};
+use serialport::{DataBits, FlowControl, SerialPort};
 #[cfg(unix)]
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
 
@@ -44,14 +44,8 @@ impl Backend for Port {
         platform::configure(self, settings, rts, dtr)
     }
 
-    // termios settings leave the modem lines alone, so the levels need not be written here.
     #[cfg(unix)]
-    fn configure(
-        &mut self,
-        settings: &Settings,
-        _rts: bool,
-        _dtr: bool,
-    ) -> Result<(), SerialError> {
+    fn configure(&mut self, settings: &Settings, rts: bool, dtr: bool) -> Result<(), SerialError> {
         #[cfg(all(unix, not(target_os = "linux")))]
         if matches!(settings.parity, Parity::Mark | Parity::Space) {
             // Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
@@ -82,7 +76,14 @@ impl Backend for Port {
             FlowControl::None
         })?;
         platform::apply(self, settings)?;
-        Ok(self.set_baud_rate(settings.baudrate)?)
+        self.set_baud_rate(settings.baudrate)?;
+        // Opening the device raises the lines, and turning flow control off leaves a line
+        // where the driver put it, so the stored levels are written each time.
+        platform::set_lines(
+            self,
+            (!settings.rtscts).then_some(rts),
+            (!settings.dsrdtr).then_some(dtr),
+        )
     }
 
     fn set_rts(&mut self, level: bool) -> Result<(), SerialError> {
@@ -179,10 +180,61 @@ mod platform {
     #[cfg(target_os = "macos")]
     use nix::sys::termios::{BaudRate, cfsetspeed};
     use nix::sys::termios::{InputFlags, SetArg, tcgetattr, tcsetattr};
+    use serialport::SerialPort;
     use tokio_serial::SerialStream;
 
     use crate::errors::SerialError;
     use crate::settings::Settings;
+
+    nix::ioctl_read_bad!(tiocmget, libc::TIOCMGET, libc::c_int);
+    nix::ioctl_write_ptr_bad!(tiocmset, libc::TIOCMSET, libc::c_int);
+
+    /// Sets DTR and RTS to the given levels, leaving a `None` line alone.
+    ///
+    /// A pty has no control lines and raises EINVAL or ENOTTY, which are ignored.
+    pub fn set_lines(
+        stream: &mut SerialStream,
+        rts: Option<bool>,
+        dtr: Option<bool>,
+    ) -> Result<(), SerialError> {
+        // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt), which ignores these on open;
+        // a pty has no lines, so they are ignored on every configure.
+        match write_lines(stream, rts, dtr) {
+            Err(SerialError::Os { code: Some(e), .. })
+                if e == libc::EINVAL || e == libc::ENOTTY =>
+            {
+                Ok(())
+            }
+            other => other,
+        }
+    }
+
+    /// Changes both lines in one `TIOCMSET` when both are given, so neither moves alone.
+    fn write_lines(
+        stream: &mut SerialStream,
+        rts: Option<bool>,
+        dtr: Option<bool>,
+    ) -> Result<(), SerialError> {
+        let (Some(rts), Some(dtr)) = (rts, dtr) else {
+            if let Some(level) = dtr {
+                stream.write_data_terminal_ready(level)?;
+            }
+            if let Some(level) = rts {
+                stream.write_request_to_send(level)?;
+            }
+            return Ok(());
+        };
+        let fd = stream.as_raw_fd();
+        let mut bits: libc::c_int = 0;
+        // SAFETY: `fd` is the open port owned by `stream`, and `bits` outlives the call.
+        unsafe { tiocmget(fd, &mut bits) }.map_err(std::io::Error::from)?;
+        for (line, on) in [(libc::TIOCM_RTS, rts), (libc::TIOCM_DTR, dtr)] {
+            bits = if on { bits | line } else { bits & !line };
+        }
+        // SAFETY: as above.
+        unsafe { tiocmset(fd, &bits) }.map_err(std::io::Error::from)?;
+        Ok(())
+    }
 
     /// Applies what serialport does not: raw parity errors, software flow control and, on Linux, mark and space parity.
     pub fn apply(stream: &SerialStream, settings: &Settings) -> Result<(), SerialError> {

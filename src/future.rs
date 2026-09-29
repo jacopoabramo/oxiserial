@@ -212,7 +212,7 @@ impl Drop for CompleteOnDrop {
         complete(
             &self.0,
             Err(SerialError::Os {
-                errno: None,
+                code: None,
                 message: "the operation panicked".into(),
             }),
         );

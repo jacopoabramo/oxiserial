@@ -101,7 +101,12 @@ class SerialBase:
         """Same as `port`."""
     @property
     def is_open(self) -> bool:
-        """Whether the port is open."""
+        """Whether the port is open.
+
+        A read or write that fails because the device is gone closes the port,
+        so this turns `False` and later calls raise
+        [`PortNotOpenError`][oxiserial.PortNotOpenError].
+        """
     @property
     def baudrate(self) -> int:
         """Line speed in baud."""
@@ -180,12 +185,21 @@ class SerialBase:
     def exclusive(self, value: bool | None) -> None: ...
     @property
     def rts(self) -> bool:
-        """State of the RTS line."""
+        """State of the RTS line.
+
+        While `rtscts` is on, flow control drives the line: an assigned level is
+        stored and applied when `rtscts` is turned off.
+        """
     @rts.setter
     def rts(self, value: bool) -> None: ...
     @property
     def dtr(self) -> bool:
-        """State of the DTR line."""
+        """State of the DTR line.
+
+        On Windows, while `dsrdtr` is on, flow control drives the line: an
+        assigned level is stored and applied when `dsrdtr` is turned off. Other
+        platforms have no DSR/DTR flow control and set the line at once.
+        """
     @dtr.setter
     def dtr(self, value: bool) -> None: ...
     @property
@@ -355,13 +369,19 @@ class Serial(SerialBase):
         SerialException
             If the device is disconnected.
         """
-    def read_until(self, expected: Buffer = b"\n", size: int | None = None) -> bytes:
+    def read_until(
+        self, expected: Buffer | str | None = b"\n", size: int | None = None
+    ) -> bytes:
         """Read until `expected` arrives, `size` bytes are read or the read times out.
 
-        The result includes `expected`. `timeout` covers the whole call.
+        The result includes `expected`; `None` stands for a newline. `timeout`
+        covers the whole call.
 
         Raises
         ------
+        TypeError
+            If `expected` is not `bytes`, `str` or an object with the buffer
+            protocol.
         PortNotOpenError
             If the port is closed, also while the read waits.
         SerialException
@@ -397,6 +417,8 @@ class Serial(SerialBase):
 
         For compatibility with
         [`io.TextIOWrapper`](https://docs.python.org/3/library/io.html#io.TextIOWrapper).
+        A read or write that fails because the device is gone closes the port,
+        so this turns `True`.
         """
     def readable(self) -> bool:
         """Return `True`.
@@ -427,11 +449,14 @@ class Serial(SerialBase):
     def write(self, data: Buffer | str) -> int:
         """Write `data` and return the number of bytes written.
 
-        A `str` is sent as UTF-8; anything else that `bytearray()` accepts is
-        sent as bytes.
+        A `str` is sent as UTF-8; an object with the buffer protocol, such as
+        `bytearray`, `memoryview` or `array.array`, is sent as its raw bytes.
 
         Raises
         ------
+        TypeError
+            If `data` is not `bytes`, `str` or an object with the buffer
+            protocol, for example an `int` or a list of ints.
         PortNotOpenError
             If the port is closed.
         SerialTimeoutException
