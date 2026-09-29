@@ -1,9 +1,14 @@
-# oxiserial
+[![PyPI](https://img.shields.io/pypi/v/oxiserial.svg?color=green)](https://pypi.org/project/oxiserial)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/oxiserial)](https://pypi.org/project/oxiserial)
+[![PyPI - Status](https://img.shields.io/pypi/status/oxiserial)](https://pypi.org/project/oxiserial)
+[![License](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
+[![CI](https://github.com/jacopoabramo/oxiserial/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/jacopoabramo/oxiserial/actions/workflows/ci.yaml)
+[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Checked with mypy](https://www.mypy-lang.org/static/mypy_badge.svg)](https://mypy-lang.org/)
+[![Conventional Commits](https://img.shields.io/badge/Conventional%20Commits-1.0.0-%23FE5196?logo=conventionalcommits&logoColor=white)](https://www.conventionalcommits.org)
 
-[![CI](https://github.com/jacopoabramo/oxiserial/actions/workflows/ci.yaml/badge.svg)](https://github.com/jacopoabramo/oxiserial/actions/workflows/ci.yaml)
-[![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
-[![Typed](https://img.shields.io/badge/typing-mypy%20strict-blue.svg)](https://mypy.readthedocs.io/)
+# oxiserial
 
 Serial port access for Python, written in Rust. It has the API of
 [pyserial](https://pypi.org/project/pyserial/) 3.5, and adds an asyncio
@@ -14,11 +19,12 @@ free-threaded build.
 
 ## Install
 
-oxiserial is not on PyPI yet. Building from source needs a Rust toolchain:
-
 ```sh
-pip install git+https://github.com/jacopoabramo/oxiserial
+pip install oxiserial
 ```
+
+Wheels are published for Windows, Linux and macOS. On other platforms pip
+builds from source, which needs a Rust toolchain.
 
 ## Replace pyserial
 
