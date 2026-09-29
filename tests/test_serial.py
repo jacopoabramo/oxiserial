@@ -56,7 +56,9 @@ def test_readinto(ports: tuple[Serial, Serial]) -> None:
     assert buffer == b"abcd"
 
 
-def test_write_timeout(ports: tuple[Serial, Serial], mock_pair: tuple[str, str]) -> None:
+def test_write_timeout(
+    ports: tuple[Serial, Serial], mock_pair: tuple[str, str]
+) -> None:
     a, _ = ports
     _testing.mock_block_writes(mock_pair[0], True)
     a.write_timeout = 0.05
@@ -118,7 +120,13 @@ def test_open_close_lifecycle(mock_pair: tuple[str, str]) -> None:
 
 @pytest.mark.parametrize(
     "kwargs",
-    [{"bytesize": 9}, {"parity": "X"}, {"stopbits": 3}, {"timeout": -1}, {"baudrate": -1}],
+    [
+        {"bytesize": 9},
+        {"parity": "X"},
+        {"stopbits": 3},
+        {"timeout": -1},
+        {"baudrate": -1},
+    ],
 )
 def test_invalid_settings_raise_value_error(kwargs: dict[str, object]) -> None:
     with pytest.raises(ValueError):

@@ -3,7 +3,8 @@ from typing import Any, Final, Self
 
 from typing_extensions import Buffer, disjoint_base
 
-from oxiserial import aio as aio, tools as tools
+from oxiserial import aio as aio
+from oxiserial import tools as tools
 
 __version__: str
 

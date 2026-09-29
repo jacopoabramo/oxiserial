@@ -36,6 +36,8 @@ cargo fmt --check
 cargo clippy --all-targets --features test-backend -- -D warnings
 cargo test --features test-backend
 uv run pytest
+uv run ruff check python tests
+uv run ruff format --check python tests
 uv run mypy
 uv run python -m mypy.stubtest oxiserial
 ```

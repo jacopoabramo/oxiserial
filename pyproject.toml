@@ -33,6 +33,16 @@ package = false
 testpaths = ["tests"]
 filterwarnings = ["error::pytest.PytestUnraisableExceptionWarning"]
 
+[tool.ruff]
+target-version = "py311"
+src = ["python", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "PYI"]
+
+[tool.ruff.lint.per-file-ignores]
+"python/oxiserial/__init__.py" = ["F401"]
+
 [tool.mypy]
 strict = true
 files = ["python", "tests"]
@@ -43,6 +53,7 @@ dev = [
     "mypy>=2.3.1",
     "pytest>=9.1.1",
     "rsloop>=0.1.53",
+    "ruff>=0.16.9",
 ]
 rsloop = [
     "rsloop>=0.1.53",
