@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use tokio::io::ReadBuf;
 use tokio::sync::Notify;
+use tokio::task::coop::unconstrained;
 use tokio::time::{Instant, timeout_at};
 
 use crate::backend::{self, Backend};
@@ -68,6 +69,18 @@ fn next_deadline(
         },
         _ => overall,
     }
+}
+
+/// Polls `poll` once and returns `None` if it is pending.
+///
+/// Used for an expired deadline: the cooperative budget could otherwise turn a ready
+/// poll into a pending one, and a timer would round the wait up to a millisecond.
+async fn poll_once<T>(mut poll: impl FnMut(&mut Context<'_>) -> Poll<T>) -> Option<T> {
+    unconstrained(poll_fn(|cx| match poll(cx) {
+        Poll::Ready(value) => Poll::Ready(Some(value)),
+        Poll::Pending => Poll::Ready(None),
+    }))
+    .await
 }
 
 impl PortCore {
@@ -247,12 +260,19 @@ impl PortCore {
                 .and_then(|t| Instant::now().checked_add(t));
             let mut written = 0;
             while written < data.len() {
-                let step = poll_fn(|cx| self.poll_write_some(cx, &data[written..]));
                 let n = match deadline {
-                    None => step.await?,
-                    Some(at) => timeout_at(at, step)
-                        .await
-                        .map_err(|_| SerialError::Timeout("Write timeout".into()))??,
+                    None => poll_fn(|cx| self.poll_write_some(cx, &data[written..])).await?,
+                    Some(at) if at <= Instant::now() => {
+                        match poll_once(|cx| self.poll_write_some(cx, &data[written..])).await {
+                            Some(result) => result?,
+                            None => return Ok(written),
+                        }
+                    }
+                    Some(at) => {
+                        timeout_at(at, poll_fn(|cx| self.poll_write_some(cx, &data[written..])))
+                            .await
+                            .map_err(|_| SerialError::Timeout("Write timeout".into()))??
+                    }
                 };
                 written += n;
             }
@@ -321,7 +341,7 @@ impl PortCore {
         let overall =
             settings::duration(settings.timeout).and_then(|t| Instant::now().checked_add(t));
         let gap = settings::duration(settings.inter_byte_timeout);
-        let mut out = Vec::with_capacity(size);
+        let mut out = Vec::with_capacity(size.min(4096));
         let mut chunk = vec![0u8; size.clamp(1, 4096)];
         while out.len() < size {
             let want = (size - out.len()).min(chunk.len());
@@ -365,10 +385,15 @@ impl PortCore {
         buf: &mut [u8],
         deadline: Option<Instant>,
     ) -> Result<Option<usize>, SerialError> {
-        let read = poll_fn(|cx| self.poll_read_some(cx, buf));
         let n = match deadline {
-            None => read.await?,
-            Some(at) => match timeout_at(at, read).await {
+            None => poll_fn(|cx| self.poll_read_some(cx, buf)).await?,
+            Some(at) if at <= Instant::now() => {
+                match poll_once(|cx| self.poll_read_some(cx, buf)).await {
+                    Some(result) => result?,
+                    None => return Ok(None),
+                }
+            }
+            Some(at) => match timeout_at(at, poll_fn(|cx| self.poll_read_some(cx, buf))).await {
                 Ok(result) => result?,
                 Err(_) => return Ok(None),
             },
@@ -482,12 +507,14 @@ mod tests {
         let (a, b, _) = open_pair(|s| s.inter_byte_timeout = Some(0.1));
         let (read, ()) = tokio::join!(b.read(10), async {
             a.write(b"a").await.unwrap();
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(80)).await;
             a.write(b"b").await.unwrap();
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            tokio::time::sleep(Duration::from_millis(80)).await;
             a.write(b"c").await.unwrap();
+            tokio::time::sleep(Duration::from_millis(240)).await;
+            a.write(b"d").await.unwrap();
         });
-        assert_eq!(read.unwrap(), b"ab");
+        assert_eq!(read.unwrap(), b"abc");
     }
 
     #[tokio::test(start_paused = true)]
@@ -505,6 +532,13 @@ mod tests {
         let (a, _b, a_name) = open_pair(|s| s.write_timeout = Some(0.5));
         mock::update(&a_name, |end| end.write_blocked = true);
         assert!(matches!(a.write(b"x").await, Err(SerialError::Timeout(_))));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn zero_write_timeout_returns_bytes_written() {
+        let (a, _b, a_name) = open_pair(|s| s.write_timeout = Some(0.0));
+        mock::update(&a_name, |end| end.write_blocked = true);
+        assert_eq!(a.write(b"xy").await, Ok(0));
     }
 
     #[tokio::test(start_paused = true)]
