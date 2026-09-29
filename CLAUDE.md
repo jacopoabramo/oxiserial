@@ -7,9 +7,10 @@ that can be waited on (`.wait()`) or awaited.
 
 ## Layout
 
-- `src/`: all runtime code (Rust). The extension module is `oxiserial`.
+- `src/`: all runtime code (Rust). The extension module is
+  `oxiserial._oxiserial`.
 - `python/oxiserial/`: `.pyi` stubs, `py.typed`, and an `__init__.py` that
-  only re-exports the extension.
+  only re-exports `oxiserial._oxiserial`.
 - `.github/workflows/CI.yml`: test and wheel jobs. Started from
   `maturin generate-ci github`, now maintained by hand.
 
