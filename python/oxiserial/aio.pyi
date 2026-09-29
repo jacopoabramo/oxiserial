@@ -1,6 +1,8 @@
 """Serial port whose I/O methods return futures."""
 
-from collections.abc import Generator
+from collections.abc import Callable, Generator
+from contextvars import Context
+from types import GenericAlias
 from typing import Any, Generic, Self, TypeVar, final
 
 from typing_extensions import Buffer
@@ -46,6 +48,43 @@ class Future(Generic[_T_co]):
         finished. Bytes a cancelled read had already collected are discarded;
         the ones it had not taken stay in the input buffer.
         """
+    def cancelled(self) -> bool:
+        """Return `True` if the operation was cancelled."""
+    def exception(self) -> BaseException | None:
+        """Return the exception the operation failed with, or `None` on success.
+
+        Raises
+        ------
+        asyncio.CancelledError
+            If the operation was cancelled.
+        asyncio.InvalidStateError
+            If the operation has not finished.
+        """
+    def add_done_callback(
+        self, fn: Callable[[Self], object], /, *, context: Context | None = None
+    ) -> None:
+        """Call `fn` with this future once the operation has finished.
+
+        If an event loop is running in the calling thread, `fn` runs on that
+        loop, as with `asyncio.Future`. Otherwise it runs in the thread that
+        finishes the operation, as with `concurrent.futures.Future`. If the
+        operation has already finished, `fn` is scheduled on the running loop,
+        or called at once when no loop is running.
+
+        An exception raised by `fn` goes to the loop's exception handler, or to
+        `sys.unraisablehook` when no loop is running; the remaining callbacks
+        still run.
+
+        Parameters
+        ----------
+        context
+            The context `fn` runs in. `None` uses a copy of the current context.
+        """
+    def remove_done_callback(self, fn: Callable[[Self], object], /) -> int:
+        """Remove every registration of `fn` and return how many were removed.
+
+        Callbacks are compared with `==`.
+        """
     def result(self) -> _T_co:
         """Return the result of a finished operation without waiting.
 
@@ -67,7 +106,7 @@ class Future(Generic[_T_co]):
         RuntimeError
             If no event loop is running.
         """
-    def __class_getitem__(cls, key: Any) -> Any: ...
+    def __class_getitem__(cls, item: Any, /) -> GenericAlias: ...
 
 class Serial(SerialBase):
     """Serial port whose I/O methods return a [`Future`][oxiserial.aio.Future].

@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use pyo3::exceptions::PyTimeoutError;
 use pyo3::exceptions::asyncio::{CancelledError, InvalidStateError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyCFunction, PyList};
+use pyo3::types::{PyBytes, PyCFunction, PyDict, PyGenericAlias, PyList, PyType};
 use tokio::task::AbortHandle;
 
 use crate::errors::SerialError;
@@ -42,10 +42,46 @@ struct Waiter {
     future: Py<PyAny>,
 }
 
+/// A done callback and where to run it.
+struct Callback {
+    func: Py<PyAny>,
+    future: Py<PyAny>,
+    context: Py<PyAny>,
+    /// The loop that was running when the callback was added.
+    event_loop: Option<Py<PyAny>>,
+}
+
+impl Callback {
+    /// Hands the callback to its loop through `schedule`, or calls it in this thread without one.
+    fn run(&self, py: Python<'_>, schedule: &str) -> PyResult<()> {
+        let args = (self.func.clone_ref(py), self.future.clone_ref(py));
+        let Some(event_loop) = &self.event_loop else {
+            return self.context.bind(py).call_method1("run", args).map(drop);
+        };
+        let event_loop = event_loop.bind(py);
+        // A closed loop can no longer run anything, so there is nobody left to call back.
+        if event_loop.call_method0("is_closed")?.is_truthy()? {
+            return Ok(());
+        }
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("context", &self.context)?;
+        event_loop
+            .call_method(schedule, args, Some(&kwargs))
+            .map(drop)
+    }
+
+    fn run_or_report(&self, py: Python<'_>, schedule: &str) {
+        if let Err(err) = self.run(py, schedule) {
+            err.write_unraisable(py, Some(self.func.bind(py)));
+        }
+    }
+}
+
 #[derive(Default)]
 struct State {
     result: Option<Resolution>,
     waiters: Vec<Waiter>,
+    callbacks: Vec<Arc<Callback>>,
     abort: Option<AbortHandle>,
 }
 
@@ -90,19 +126,22 @@ fn schedule(py: Python<'_>, waiter: &Waiter, resolution: &Resolution) -> PyResul
     Ok(())
 }
 
-/// Stores the first resolution and wakes every waiter; later calls return false.
+/// Stores the first resolution, wakes every waiter and runs the done callbacks; later calls return false.
 fn complete(shared: &Shared, resolution: Resolution) -> bool {
-    let waiters = {
+    let (waiters, callbacks) = {
         let mut state = lock(&shared.state);
         if state.result.is_some() {
             return false;
         }
         state.abort = None;
         state.result = Some(resolution.clone());
-        std::mem::take(&mut state.waiters)
+        (
+            std::mem::take(&mut state.waiters),
+            std::mem::take(&mut state.callbacks),
+        )
     };
     shared.finished.notify_all();
-    if !waiters.is_empty() {
+    if !waiters.is_empty() || !callbacks.is_empty() {
         // None when the interpreter is finalizing; its loops are gone by then.
         Python::try_attach(|py| {
             for waiter in waiters {
@@ -121,6 +160,9 @@ fn complete(shared: &Shared, resolution: Resolution) -> bool {
                     }
                     Err(err) => err.write_unraisable(py, None),
                 }
+            }
+            for callback in callbacks {
+                callback.run_or_report(py, "call_soon_threadsafe");
             }
         });
     }
@@ -152,7 +194,7 @@ impl Drop for CompleteOnDrop {
 }
 
 /// A port operation running on the runtime.
-#[pyclass(name = "Future", module = "oxiserial.aio", frozen, generic)]
+#[pyclass(name = "Future", module = "oxiserial.aio", frozen)]
 pub struct OpFuture {
     shared: Arc<Shared>,
 }
@@ -254,6 +296,88 @@ impl OpFuture {
         })?;
         future.call_method1("add_done_callback", (on_done,))?;
         future.call_method0("__await__")
+    }
+
+    #[classmethod]
+    #[pyo3(signature = (item, /))]
+    fn __class_getitem__<'py>(
+        cls: &Bound<'py, PyType>,
+        item: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyGenericAlias>> {
+        PyGenericAlias::new(cls.py(), cls.as_any(), item)
+    }
+
+    #[pyo3(signature = (r#fn, /, *, context = None))]
+    fn add_done_callback(
+        slf: &Bound<'_, Self>,
+        r#fn: Py<PyAny>,
+        context: Option<Py<PyAny>>,
+    ) -> PyResult<()> {
+        let py = slf.py();
+        let context = match context {
+            Some(context) => context,
+            None => py
+                .import("contextvars")?
+                .call_method0("copy_context")?
+                .unbind(),
+        };
+        let event_loop = py.import("asyncio")?.call_method0("_get_running_loop")?;
+        let callback = Arc::new(Callback {
+            func: r#fn,
+            future: slf.clone().into_any().unbind(),
+            context,
+            event_loop: (!event_loop.is_none()).then(|| event_loop.unbind()),
+        });
+        {
+            let mut state = lock(&slf.get().shared.state);
+            if state.result.is_none() {
+                state.callbacks.push(callback);
+                return Ok(());
+            }
+        }
+        callback.run_or_report(py, "call_soon");
+        Ok(())
+    }
+
+    #[pyo3(signature = (r#fn, /))]
+    fn remove_done_callback(&self, r#fn: &Bound<'_, PyAny>) -> PyResult<usize> {
+        let registered = lock(&self.shared.state).callbacks.clone();
+        let mut matched = Vec::new();
+        for callback in registered {
+            if callback.func.bind(r#fn.py()).eq(r#fn)? {
+                matched.push(callback);
+            }
+        }
+        // Dropping a callback can run Python code, so the removed ones are dropped after the lock.
+        let removed: Vec<_> = {
+            let mut state = lock(&self.shared.state);
+            let (removed, kept) = std::mem::take(&mut state.callbacks)
+                .into_iter()
+                .partition(|callback| matched.iter().any(|m| Arc::ptr_eq(callback, m)));
+            state.callbacks = kept;
+            removed
+        };
+        Ok(removed.len())
+    }
+
+    fn cancelled(&self) -> bool {
+        matches!(
+            lock(&self.shared.state).result,
+            Some(Err(SerialError::Cancelled))
+        )
+    }
+
+    fn exception(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        let failure = match &lock(&self.shared.state).result {
+            None => None,
+            Some(Ok(_)) => return Ok(None),
+            Some(Err(err)) => Some(err.clone()),
+        };
+        match failure {
+            None => Err(InvalidStateError::new_err("Exception is not set.")),
+            Some(SerialError::Cancelled) => Err(SerialError::Cancelled.into()),
+            Some(err) => Ok(Some(PyErr::from(err).into_value(py).into_any())),
+        }
     }
 
     fn done(&self) -> bool {
