@@ -59,41 +59,6 @@ impl Drop for CancelWrite<'_> {
     }
 }
 
-/// On POSIX, control lines of a pty raise EINVAL or ENOTTY; pyserial ignores those on open.
-#[cfg(unix)]
-fn ignore_unsupported(result: Result<(), SerialError>) -> Result<(), SerialError> {
-    // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): errors ignored on open.
-    match result {
-        Err(SerialError::Os { errno: Some(e), .. }) if e == libc::EINVAL || e == libc::ENOTTY => {
-            Ok(())
-        }
-        other => other,
-    }
-}
-
-#[cfg(not(unix))]
-fn ignore_unsupported(result: Result<(), SerialError>) -> Result<(), SerialError> {
-    result
-}
-
-/// Writes the stored DTR and RTS levels, except for a line the flow control setting drives.
-///
-/// Opening a device may set the lines itself, so they are written again after open.
-fn restore_lines(
-    port: &mut dyn Backend,
-    settings: &Settings,
-    rts: bool,
-    dtr: bool,
-) -> Result<(), SerialError> {
-    if !settings.dsrdtr {
-        ignore_unsupported(port.set_dtr(dtr))?;
-    }
-    if !settings.rtscts {
-        ignore_unsupported(port.set_rts(rts))?;
-    }
-    Ok(())
-}
-
 /// With an inter-byte timeout and data already received, the deadline moves to one gap from now.
 fn next_deadline(
     overall: Option<Instant>,
@@ -174,8 +139,7 @@ impl PortCore {
             return Err(SerialError::AlreadyOpen);
         }
         // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): open order.
-        let mut opened = backend::open(&port, &settings, rts, dtr)?;
-        restore_lines(opened.as_mut(), &settings, rts, dtr)?;
+        let opened = backend::open(&port, &settings, rts, dtr)?;
         opened.clear_buffers(true, false)?;
         *slot = Some(opened);
         Ok(())
@@ -650,6 +614,20 @@ mod tests {
         assert_eq!(
             mock::update(&a_name, |end| (end.rts, end.dtr)),
             Some((false, false))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn opening_writes_each_line_once_at_the_stored_level() -> Result<(), SerialError> {
+        let (a_name, _) = mock::pair();
+        let a = PortCore::new(Some(a_name.clone()), Settings::default());
+        a.set_rts(false)?;
+        a.set_dtr(false)?;
+        a.open()?;
+        assert_eq!(
+            mock::update(&a_name, |end| (end.line_writes, end.high_writes)),
+            Some((2, 0))
         );
         Ok(())
     }
