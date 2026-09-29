@@ -62,22 +62,7 @@ jobs:
       - name: Virtual port pair (Windows, com0com)
         if: runner.os == 'Windows'
         continue-on-error: true
-        shell: pwsh
-        run: |
-          $dir = Join-Path $env:RUNNER_TEMP "com0com"
-          Invoke-WebRequest -UserAgent "oxiserial-ci" -OutFile "$dir.zip" `
-            -Uri "https://sourceforge.net/projects/com0com/files/com0com/2.2.2.0/com0com-2.2.2.0-x64-fre-signed.zip/download"
-          Expand-Archive "$dir.zip" $dir
-          $installer = Get-ChildItem $dir -Recurse -Filter *.exe | Select-Object -First 1
-          # A silent driver install needs the publisher certificate trusted first.
-          $cert = (Get-AuthenticodeSignature $installer.FullName).SignerCertificate
-          $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("TrustedPublisher", "LocalMachine")
-          $store.Open("ReadWrite"); $store.Add($cert); $store.Close()
-          Start-Process $installer.FullName -ArgumentList "/S" -Wait
-          & "${env:ProgramFiles(x86)}\com0com\setupc.exe" install PortName=COM90 PortName=COM91
-          [System.IO.Ports.SerialPort]::GetPortNames()
-          "OXISERIAL_PORT_A=COM90" >> $env:GITHUB_ENV
-          "OXISERIAL_PORT_B=COM91" >> $env:GITHUB_ENV
+        uses: ./.github/actions/setup-com0com
       - run: uv run pytest -v
       - run: uv run mypy
       - run: uv run python -m mypy.stubtest oxiserial
@@ -105,13 +90,7 @@ jobs:
       - uses: actions/checkout@v6
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          # PEP 440 pre-release (1.2.0rc1) -> semver (1.2.0-rc.1); maturin maps it back.
-          v="$(echo "${GITHUB_REF_NAME#v}" | sed -E 's/(a|b|rc)([0-9]+)$/-\1.\2/')"
-          sed -i.bak -E '/^\[package\]/,/^\[/ s/^version = ".*"/version = "'"$v"'"/' Cargo.toml
-          rm Cargo.toml.bak
-          cargo update --workspace
+        uses: ./.github/actions/set-version-from-tag
       - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
@@ -145,13 +124,7 @@ jobs:
       - uses: actions/checkout@v6
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          # PEP 440 pre-release (1.2.0rc1) -> semver (1.2.0-rc.1); maturin maps it back.
-          v="$(echo "${GITHUB_REF_NAME#v}" | sed -E 's/(a|b|rc)([0-9]+)$/-\1.\2/')"
-          sed -i.bak -E '/^\[package\]/,/^\[/ s/^version = ".*"/version = "'"$v"'"/' Cargo.toml
-          rm Cargo.toml.bak
-          cargo update --workspace
+        uses: ./.github/actions/set-version-from-tag
       - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
@@ -186,13 +159,7 @@ jobs:
       - uses: actions/checkout@v6
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          # PEP 440 pre-release (1.2.0rc1) -> semver (1.2.0-rc.1); maturin maps it back.
-          v="$(echo "${GITHUB_REF_NAME#v}" | sed -E 's/(a|b|rc)([0-9]+)$/-\1.\2/')"
-          sed -i.bak -E '/^\[package\]/,/^\[/ s/^version = ".*"/version = "'"$v"'"/' Cargo.toml
-          rm Cargo.toml.bak
-          cargo update --workspace
+        uses: ./.github/actions/set-version-from-tag
       - uses: actions/setup-python@v6
         id: py311
         with:
@@ -228,13 +195,7 @@ jobs:
       - uses: actions/checkout@v6
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          # PEP 440 pre-release (1.2.0rc1) -> semver (1.2.0-rc.1); maturin maps it back.
-          v="$(echo "${GITHUB_REF_NAME#v}" | sed -E 's/(a|b|rc)([0-9]+)$/-\1.\2/')"
-          sed -i.bak -E '/^\[package\]/,/^\[/ s/^version = ".*"/version = "'"$v"'"/' Cargo.toml
-          rm Cargo.toml.bak
-          cargo update --workspace
+        uses: ./.github/actions/set-version-from-tag
       - uses: actions/setup-python@v6
         id: py311
         with:
@@ -261,13 +222,7 @@ jobs:
       - uses: actions/checkout@v6
       - name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          # PEP 440 pre-release (1.2.0rc1) -> semver (1.2.0-rc.1); maturin maps it back.
-          v="$(echo "${GITHUB_REF_NAME#v}" | sed -E 's/(a|b|rc)([0-9]+)$/-\1.\2/')"
-          sed -i.bak -E '/^\[package\]/,/^\[/ s/^version = ".*"/version = "'"$v"'"/' Cargo.toml
-          rm Cargo.toml.bak
-          cargo update --workspace
+        uses: ./.github/actions/set-version-from-tag
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
