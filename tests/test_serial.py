@@ -335,13 +335,14 @@ def test_opening_a_missing_port_reports_the_errno() -> None:
 
 
 def test_opening_a_missing_port_reports_the_windows_error() -> None:
-    """Report the Windows error code and the matching errno for a missing port."""
+    """Report the Windows error code once, with its errno, for a missing port."""
     if sys.platform != "win32":
         pytest.skip("the Windows error code is Windows only")
     with pytest.raises(SerialException) as info:
         Serial("COM250")
     assert info.value.winerror == 2
     assert info.value.errno == errno.ENOENT
+    assert "(os error" not in str(info.value)
 
 
 def test_read_all_portstr_and_repr(

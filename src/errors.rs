@@ -106,10 +106,17 @@ impl std::error::Error for SerialError {}
 
 impl From<std::io::Error> for SerialError {
     fn from(err: std::io::Error) -> Self {
-        Self::Os {
-            code: err.raw_os_error(),
-            message: err.to_string(),
-        }
+        let code = err.raw_os_error();
+        let text = err.to_string();
+        let message = match code {
+            // The exception already shows the code as `[WinError N]`.
+            Some(code) if cfg!(windows) => text
+                .strip_suffix(&format!(" (os error {code})"))
+                .unwrap_or(&text)
+                .to_owned(),
+            _ => text,
+        };
+        Self::Os { code, message }
     }
 }
 
