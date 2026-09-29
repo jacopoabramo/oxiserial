@@ -79,10 +79,12 @@ fn _oxiserial(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("Baudrate", serial::baudrate_enum(py)?)?;
     m.add_class::<serial::SerialBase>()?;
     m.add_class::<serial::Serial>()?;
+    m.add_function(wrap_pyfunction!(serial::serial_for_url, m)?)?;
 
     let aio_module = PyModule::new(py, "oxiserial.aio")?;
     aio_module.add_class::<future::OpFuture>()?;
     aio_module.add_class::<aio::AioSerial>()?;
+    aio_module.add_function(wrap_pyfunction!(aio::serial_for_url, &aio_module)?)?;
     add_submodule(m, "aio", &aio_module)?;
 
     let tools_module = PyModule::new(py, "oxiserial.tools")?;

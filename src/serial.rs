@@ -5,7 +5,9 @@ use std::time::Duration;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyByteArray, PyBytes, PyDict, PyInt, PyMemoryView, PySlice, PyString, PyTuple};
+use pyo3::types::{
+    PyByteArray, PyBytes, PyDict, PyInt, PyMemoryView, PySlice, PyString, PyTuple, PyType,
+};
 
 use crate::errors::SerialError;
 use crate::future::{OpFuture, Outcome};
@@ -182,6 +184,56 @@ fn stopbits_object<'py>(py: Python<'py>, stopbits: StopBits) -> PyResult<Bound<'
         StopBits::OnePointFive => 1.5_f64.into_pyobject(py)?.into_any(),
         StopBits::Two => 2_i32.into_pyobject(py)?.into_any(),
     })
+}
+
+/// Creates `cls(None, *args, **kwargs)`, sets its port to `url` and opens it unless `do_not_open`.
+// Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): serial_for_url.
+pub(crate) fn for_url<'py>(
+    cls: &Bound<'py, PyType>,
+    url: &Bound<'py, PyAny>,
+    args: &Bound<'py, PyTuple>,
+    do_not_open: Truthy,
+    kwargs: Option<&Bound<'py, PyDict>>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let py = cls.py();
+    if let Ok(text) = url.cast::<PyString>()
+        && let Some((protocol, _)) = text.to_str()?.to_lowercase().split_once("://")
+        && protocol != "loop"
+    {
+        return Err(PyValueError::new_err(format!(
+            "invalid URL, protocol {} not known",
+            PyString::new(py, protocol).repr()?
+        )));
+    }
+    let mut call_args = vec![py.None().into_bound(py)];
+    call_args.extend(args.iter());
+    let instance = cls.call(PyTuple::new(py, call_args)?, kwargs)?;
+    instance.setattr("port", url)?;
+    if !do_not_open.0 {
+        instance.call_method0("open")?;
+    }
+    Ok(instance)
+}
+
+/// Returns a `Serial` for `url`, which is a device name or `loop://`.
+#[pyfunction]
+#[pyo3(
+    signature = (url, *args, do_not_open = Truthy(false), **kwargs),
+    text_signature = "(url, *args, do_not_open=False, **kwargs)"
+)]
+pub(crate) fn serial_for_url<'py>(
+    url: &Bound<'py, PyAny>,
+    args: &Bound<'py, PyTuple>,
+    do_not_open: Truthy,
+    kwargs: Option<&Bound<'py, PyDict>>,
+) -> PyResult<Bound<'py, PyAny>> {
+    for_url(
+        &url.py().get_type::<Serial>(),
+        url,
+        args,
+        do_not_open,
+        kwargs,
+    )
 }
 
 /// Properties and non-I/O methods shared by `oxiserial.Serial` and `oxiserial.aio.Serial`.

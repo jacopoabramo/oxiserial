@@ -5,7 +5,30 @@ use pyo3::types::{PyDict, PyTuple};
 
 use crate::future::{OpFuture, Outcome};
 use crate::port::PortCore;
-use crate::serial::{Baudrate, Bytesize, SerialBase, Truthy, expected_bytes, ops, to_bytes};
+use crate::serial::{
+    Baudrate, Bytesize, SerialBase, Truthy, expected_bytes, for_url, ops, to_bytes,
+};
+
+/// Returns an `oxiserial.aio.Serial` for `url`, which is a device name or `loop://`.
+#[pyfunction]
+#[pyo3(
+    signature = (url, *args, do_not_open = Truthy(false), **kwargs),
+    text_signature = "(url, *args, do_not_open=False, **kwargs)"
+)]
+pub fn serial_for_url<'py>(
+    url: &Bound<'py, PyAny>,
+    args: &Bound<'py, PyTuple>,
+    do_not_open: Truthy,
+    kwargs: Option<&Bound<'py, PyDict>>,
+) -> PyResult<Bound<'py, PyAny>> {
+    for_url(
+        &url.py().get_type::<AioSerial>(),
+        url,
+        args,
+        do_not_open,
+        kwargs,
+    )
+}
 
 /// Serial port whose I/O methods return futures.
 #[pyclass(name = "Serial", module = "oxiserial.aio", extends = SerialBase, subclass, frozen)]

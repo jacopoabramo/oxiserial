@@ -502,3 +502,22 @@ class Serial(SerialBase):
         StopIteration
             If the read returns no data.
         """
+
+def serial_for_url(
+    url: str | None, *args: Any, do_not_open: bool = False, **kwargs: Any
+) -> Serial:
+    """Create a [`Serial`][oxiserial.Serial] for a device name or URL and open it.
+
+    `url` is a device name such as `COM3` or `/dev/ttyUSB0`, or `loop://`, a
+    port with no hardware behind it: reads return the bytes written to it,
+    `cts` follows `rts` and `dsr` follows `dtr`. The other arguments go to
+    [`Serial`][oxiserial.Serial]. With `do_not_open` the port is returned
+    closed.
+
+    Raises
+    ------
+    ValueError
+        If `url` has a scheme other than `loop://`, or a setting is not valid.
+    SerialException
+        If the device cannot be opened.
+    """
