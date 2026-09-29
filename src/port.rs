@@ -317,6 +317,7 @@ impl PortCore {
         let _turn = self.write_turn.lock().await;
         self.until_closed(async {
             match self.with_backend(|port| port.drain_handle())? {
+                #[cfg(feature = "test-backend")]
                 Drain::Done => Ok(()),
                 #[cfg(unix)]
                 Drain::Fd(fd) => tokio::task::spawn_blocking(move || {

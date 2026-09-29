@@ -289,13 +289,19 @@ mod tests {
         Ok(())
     }
 
+    #[cfg_attr(
+        not(feature = "test-backend"),
+        allow(clippy::infallible_destructuring_match)
+    )]
     #[tokio::test]
     async fn drain_handle_gives_a_descriptor_that_drains() -> Result<(), Box<dyn std::error::Error>>
     {
         let (mut a, mut b) = SerialStream::pair()?;
         a.write_all(b"x").await?;
-        let Drain::Fd(fd) = a.drain_handle()? else {
-            return Err("expected a descriptor".into());
+        let fd = match a.drain_handle()? {
+            Drain::Fd(fd) => fd,
+            #[cfg(feature = "test-backend")]
+            Drain::Done => return Err("expected a descriptor".into()),
         };
         nix::sys::termios::tcdrain(&fd)?;
         let mut buf = [0u8; 1];

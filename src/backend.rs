@@ -10,6 +10,7 @@ pub mod native;
 /// What `PortCore::flush` waits on once the backend lock is released.
 pub enum Drain {
     /// Nothing is buffered by the backend.
+    #[cfg(feature = "test-backend")]
     Done,
     /// A duplicate of the port descriptor to run `tcdrain` on.
     #[cfg(unix)]
