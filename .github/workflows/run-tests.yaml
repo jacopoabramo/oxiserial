@@ -5,7 +5,7 @@ on:
 
 jobs:
   test:
-    name: test (${{ matrix.os }}, ${{ matrix.python }})
+    name: test (${{ matrix.os }}, ${{ matrix.python }}${{ matrix.python == '3.14' && ', release' || '' }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -33,7 +33,7 @@ jobs:
         run: |
           base="$(uv run python -c 'import sys; print(sys.base_prefix)')"
           LD_LIBRARY_PATH="$base/lib" DYLD_LIBRARY_PATH="$base/lib" cargo test --features test-backend
-      - run: uv run maturin develop --uv --features test-backend
+      - run: uv run maturin develop --uv --features test-backend ${{ matrix.python == '3.14' && '--release' || '' }}
       - name: Virtual port pair (Linux)
         if: runner.os == 'Linux'
         run: |
