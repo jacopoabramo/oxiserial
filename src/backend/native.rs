@@ -254,61 +254,63 @@ mod tests {
         ignore = "serialport sets termios through an ioctl that macOS ptys reject"
     )]
     #[tokio::test]
-    async fn configured_pty_pair_carries_data() {
-        let (mut a, mut b) = SerialStream::pair().unwrap();
+    async fn configured_pty_pair_carries_data() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut a, mut b) = SerialStream::pair()?;
         let settings = Settings {
             baudrate: 115_200,
             stopbits: StopBits::OnePointFive,
             ..Settings::default()
         };
-        a.configure(&settings).unwrap();
-        b.configure(&settings).unwrap();
-        a.write_all(b"ping").await.unwrap();
+        a.configure(&settings)?;
+        b.configure(&settings)?;
+        a.write_all(b"ping").await?;
         let mut buf = [0u8; 4];
-        b.read_exact(&mut buf).await.unwrap();
+        b.read_exact(&mut buf).await?;
         assert_eq!(&buf, b"ping");
+        Ok(())
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn mark_and_space_parity_set_the_termios_bits_on_linux() {
+    fn mark_and_space_parity_set_the_termios_bits_on_linux()
+    -> Result<(), Box<dyn std::error::Error>> {
         use std::os::fd::{AsRawFd, BorrowedFd};
 
         use nix::sys::termios::{ControlFlags, tcgetattr};
 
-        let (mut a, _b) = SerialStream::pair().unwrap();
+        let (mut a, _b) = SerialStream::pair()?;
         // SAFETY: the descriptor belongs to `a`, which outlives this borrow.
         let fd = unsafe { BorrowedFd::borrow_raw(a.as_raw_fd()) };
-        let flags = || tcgetattr(fd).unwrap().control_flags;
+        let flags = || tcgetattr(fd).map(|attrs| attrs.control_flags);
 
         a.configure(&Settings {
             parity: Parity::Mark,
             ..Settings::default()
-        })
-        .unwrap();
+        })?;
         let mark = ControlFlags::PARENB | ControlFlags::CMSPAR | ControlFlags::PARODD;
-        assert!(flags().contains(mark));
+        assert!(flags()?.contains(mark));
 
         a.configure(&Settings {
             parity: Parity::Space,
             ..Settings::default()
-        })
-        .unwrap();
-        assert!(flags().contains(ControlFlags::PARENB | ControlFlags::CMSPAR));
-        assert!(!flags().contains(ControlFlags::PARODD));
+        })?;
+        assert!(flags()?.contains(ControlFlags::PARENB | ControlFlags::CMSPAR));
+        assert!(!flags()?.contains(ControlFlags::PARODD));
 
-        a.configure(&Settings::default()).unwrap();
-        assert!(!flags().intersects(ControlFlags::CMSPAR | ControlFlags::PARENB));
+        a.configure(&Settings::default())?;
+        assert!(!flags()?.intersects(ControlFlags::CMSPAR | ControlFlags::PARENB));
+        Ok(())
     }
 
     #[cfg(target_os = "macos")]
     #[tokio::test]
-    async fn mark_parity_is_rejected_on_macos() {
-        let (mut a, _b) = SerialStream::pair().unwrap();
+    async fn mark_parity_is_rejected_on_macos() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut a, _b) = SerialStream::pair()?;
         let settings = Settings {
             parity: Parity::Mark,
             ..Settings::default()
         };
         assert!(matches!(a.configure(&settings), Err(SerialError::Value(_))));
+        Ok(())
     }
 }

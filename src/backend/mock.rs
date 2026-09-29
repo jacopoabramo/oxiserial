@@ -214,49 +214,52 @@ mod tests {
     use crate::backend::Backend;
 
     #[tokio::test]
-    async fn bytes_and_lines_cross_over() {
+    async fn bytes_and_lines_cross_over() -> Result<(), Box<dyn std::error::Error>> {
         let (a_name, b_name) = pair();
-        let mut a = lookup(&a_name).unwrap();
-        let mut b = lookup(&b_name).unwrap();
+        let mut a = lookup(&a_name).ok_or("mock port a is not registered")?;
+        let mut b = lookup(&b_name).ok_or("mock port b is not registered")?;
 
-        a.write_all(b"hi").await.unwrap();
-        assert_eq!(b.in_waiting().unwrap(), 2);
+        a.write_all(b"hi").await?;
+        assert_eq!(b.in_waiting()?, 2);
         let mut buf = [0u8; 2];
-        b.read_exact(&mut buf).await.unwrap();
+        b.read_exact(&mut buf).await?;
         assert_eq!(&buf, b"hi");
 
-        a.set_rts(false).unwrap();
-        a.set_dtr(false).unwrap();
-        assert!(!b.cts().unwrap());
-        assert!(!b.dsr().unwrap() && !b.cd().unwrap());
-        assert!(a.dsr().unwrap() && a.cd().unwrap());
+        a.set_rts(false)?;
+        a.set_dtr(false)?;
+        assert!(!b.cts()?);
+        assert!(!b.dsr()? && !b.cd()?);
+        assert!(a.dsr()? && a.cd()?);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn pending_read_wakes_when_peer_writes() {
+    async fn pending_read_wakes_when_peer_writes() -> Result<(), Box<dyn std::error::Error>> {
         let (a_name, b_name) = pair();
-        let mut a = lookup(&a_name).unwrap();
-        let mut b = lookup(&b_name).unwrap();
+        let mut a = lookup(&a_name).ok_or("mock port a is not registered")?;
+        let mut b = lookup(&b_name).ok_or("mock port b is not registered")?;
         let read = tokio::spawn(async move {
             let mut buf = [0u8; 2];
-            b.read_exact(&mut buf).await.unwrap();
-            buf
+            b.read_exact(&mut buf).await?;
+            Ok::<_, std::io::Error>(buf)
         });
         tokio::task::yield_now().await;
         assert!(!read.is_finished());
-        a.write_all(b"ok").await.unwrap();
-        assert_eq!(&read.await.unwrap(), b"ok");
+        a.write_all(b"ok").await?;
+        assert_eq!(&read.await??, b"ok");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn blocked_writes_resume_when_unblocked() {
+    async fn blocked_writes_resume_when_unblocked() -> Result<(), Box<dyn std::error::Error>> {
         let (a_name, _b_name) = pair();
-        let mut a = lookup(&a_name).unwrap();
+        let mut a = lookup(&a_name).ok_or("mock port a is not registered")?;
         update(&a_name, |end| end.write_blocked = true);
         let write = tokio::spawn(async move { a.write_all(b"x").await });
         tokio::task::yield_now().await;
         assert!(!write.is_finished());
         update(&a_name, |end| end.write_blocked = false);
-        write.await.unwrap().unwrap();
+        write.await??;
+        Ok(())
     }
 }

@@ -39,6 +39,25 @@ impl SerialError {
     }
 }
 
+impl std::fmt::Display for SerialError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Os { message, .. } | Self::Timeout(message) | Self::Value(message) => {
+                f.write_str(message)
+            }
+            Self::NotOpen => f.write_str("Attempting to use a port that is not open"),
+            Self::AlreadyOpen => f.write_str("Port is already open."),
+            Self::NoPort => f.write_str("Port must be configured before it can be used."),
+            Self::Cancelled => f.write_str("the operation was cancelled"),
+            Self::Forked => {
+                f.write_str("oxiserial cannot be used in a child process created by fork()")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SerialError {}
+
 impl From<std::io::Error> for SerialError {
     fn from(err: std::io::Error) -> Self {
         Self::Os {

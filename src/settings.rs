@@ -134,9 +134,9 @@ mod tests {
     }
 
     #[test]
-    fn accepts_every_documented_value() {
+    fn accepts_every_documented_value() -> Result<(), SerialError> {
         for name in ["N", "E", "O", "M", "S"] {
-            assert_eq!(Parity::from_name(name).unwrap().name(), name);
+            assert_eq!(Parity::from_name(name)?.name(), name);
         }
         for value in [1.0, 1.5, 2.0] {
             assert!(StopBits::from_value(value).is_ok());
@@ -144,6 +144,7 @@ mod tests {
         for size in 5..=8 {
             assert!(bytesize(size).is_ok());
         }
+        Ok(())
     }
 
     #[test]

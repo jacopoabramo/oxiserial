@@ -31,12 +31,21 @@ pub struct PortCore {
     closed: Notify,
 }
 
-/// Clears the break condition when `send_break` ends, including by cancellation.
-struct BreakGuard<'a>(&'a PortCore);
+/// Clears the break condition when `send_break` is cancelled before it clears it itself.
+struct BreakGuard<'a>(Option<&'a PortCore>);
+
+impl BreakGuard<'_> {
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
 
 impl Drop for BreakGuard<'_> {
     fn drop(&mut self) {
-        let _ = self.0.set_break_condition(false);
+        if let Some(core) = self.0 {
+            // Runs only on cancellation, where no caller is left to receive an error.
+            let _ = core.set_break_condition(false);
+        }
     }
 }
 
@@ -311,9 +320,10 @@ impl PortCore {
         let _turn = self.write_turn.lock().await;
         self.until_closed(async {
             self.set_break_condition(true)?;
-            let _clear = BreakGuard(self);
+            let mut clear = BreakGuard(Some(self));
             tokio::time::sleep(duration).await;
-            Ok(())
+            clear.disarm();
+            self.set_break_condition(false)
         })
         .await
     }
@@ -480,137 +490,154 @@ mod tests {
     use super::*;
     use crate::backend::mock;
 
-    fn open_pair(configure: impl Fn(&mut Settings)) -> (PortCore, PortCore, String) {
+    fn open_pair(
+        configure: impl Fn(&mut Settings),
+    ) -> Result<(PortCore, PortCore, String), SerialError> {
         let (a_name, b_name) = mock::pair();
         let mut settings = Settings::default();
         configure(&mut settings);
         let a = PortCore::new(Some(a_name.clone()), settings.clone());
         let b = PortCore::new(Some(b_name), settings);
-        a.open().unwrap();
-        b.open().unwrap();
-        (a, b, a_name)
+        a.open()?;
+        b.open()?;
+        Ok((a, b, a_name))
     }
 
     #[test]
-    fn reconfiguring_an_open_port_keeps_the_line_levels() {
-        let (a, _b, a_name) = open_pair(|_| {});
-        a.set_rts(false).unwrap();
-        a.set_dtr(false).unwrap();
+    fn reconfiguring_an_open_port_keeps_the_line_levels() -> Result<(), SerialError> {
+        let (a, _b, a_name) = open_pair(|_| {})?;
+        a.set_rts(false)?;
+        a.set_dtr(false)?;
         a.set_settings(Settings {
             baudrate: 19_200,
             ..a.settings()
-        })
-        .unwrap();
+        })?;
         assert_eq!(
             mock::update(&a_name, |end| (end.rts, end.dtr)),
             Some((false, false))
         );
+        Ok(())
     }
 
     #[tokio::test(start_paused = true)]
-    async fn read_without_timeout_waits_for_every_byte() {
-        let (a, b, _) = open_pair(|_| {});
-        let (read, ()) = tokio::join!(b.read(4), async {
-            a.write(b"ab").await.unwrap();
+    async fn read_without_timeout_waits_for_every_byte() -> Result<(), SerialError> {
+        let (a, b, _) = open_pair(|_| {})?;
+        let (read, written) = tokio::join!(b.read(4), async {
+            a.write(b"ab").await?;
             tokio::time::sleep(Duration::from_secs(5)).await;
-            a.write(b"cd").await.unwrap();
+            a.write(b"cd").await?;
+            Ok::<(), SerialError>(())
         });
-        assert_eq!(read.unwrap(), b"abcd");
+        written?;
+        assert_eq!(read?, b"abcd");
+        Ok(())
     }
 
     #[tokio::test(start_paused = true)]
-    async fn timeout_returns_partial_data_after_the_deadline() {
-        let (a, b, _) = open_pair(|s| s.timeout = Some(1.0));
-        a.write(b"ab").await.unwrap();
+    async fn timeout_returns_partial_data_after_the_deadline() -> Result<(), SerialError> {
+        let (a, b, _) = open_pair(|s| s.timeout = Some(1.0))?;
+        a.write(b"ab").await?;
         let start = Instant::now();
-        assert_eq!(b.read(4).await.unwrap(), b"ab");
+        assert_eq!(b.read(4).await?, b"ab");
         let waited = start.elapsed();
         assert!(waited >= Duration::from_secs(1) && waited < Duration::from_millis(1100));
+        Ok(())
     }
 
     #[tokio::test(start_paused = true)]
-    async fn zero_timeout_returns_buffered_bytes_without_waiting() {
-        let (a, b, _) = open_pair(|s| s.timeout = Some(0.0));
-        assert_eq!(b.read(4).await.unwrap(), b"");
-        a.write(b"ab").await.unwrap();
+    async fn zero_timeout_returns_buffered_bytes_without_waiting() -> Result<(), SerialError> {
+        let (a, b, _) = open_pair(|s| s.timeout = Some(0.0))?;
+        assert_eq!(b.read(4).await?, b"");
+        a.write(b"ab").await?;
         let start = Instant::now();
-        assert_eq!(b.read(4).await.unwrap(), b"ab");
+        assert_eq!(b.read(4).await?, b"ab");
         assert_eq!(start.elapsed(), Duration::ZERO);
+        Ok(())
     }
 
     #[tokio::test(start_paused = true)]
-    async fn inter_byte_timeout_ends_the_read_after_a_gap() {
-        let (a, b, _) = open_pair(|s| s.inter_byte_timeout = Some(0.1));
-        let (read, ()) = tokio::join!(b.read(10), async {
-            a.write(b"a").await.unwrap();
+    async fn inter_byte_timeout_ends_the_read_after_a_gap() -> Result<(), SerialError> {
+        let (a, b, _) = open_pair(|s| s.inter_byte_timeout = Some(0.1))?;
+        let (read, written) = tokio::join!(b.read(10), async {
+            a.write(b"a").await?;
             tokio::time::sleep(Duration::from_millis(80)).await;
-            a.write(b"b").await.unwrap();
+            a.write(b"b").await?;
             tokio::time::sleep(Duration::from_millis(80)).await;
-            a.write(b"c").await.unwrap();
+            a.write(b"c").await?;
             tokio::time::sleep(Duration::from_millis(240)).await;
-            a.write(b"d").await.unwrap();
+            a.write(b"d").await?;
+            Ok::<(), SerialError>(())
         });
-        assert_eq!(read.unwrap(), b"abc");
+        written?;
+        assert_eq!(read?, b"abc");
+        Ok(())
     }
 
     #[tokio::test(start_paused = true)]
-    async fn read_until_leaves_later_bytes_unread() {
-        let (a, b, _) = open_pair(|s| s.timeout = Some(0.0));
-        a.write(b"x\ny\nabcdef").await.unwrap();
-        assert_eq!(b.read_until(b"\n", None).await.unwrap(), b"x\n");
-        assert_eq!(b.read_until(b"\n", None).await.unwrap(), b"y\n");
-        assert_eq!(b.read_until(b"\n", Some(3)).await.unwrap(), b"abc");
-        assert_eq!(b.read(10).await.unwrap(), b"def");
+    async fn read_until_leaves_later_bytes_unread() -> Result<(), SerialError> {
+        let (a, b, _) = open_pair(|s| s.timeout = Some(0.0))?;
+        a.write(b"x\ny\nabcdef").await?;
+        assert_eq!(b.read_until(b"\n", None).await?, b"x\n");
+        assert_eq!(b.read_until(b"\n", None).await?, b"y\n");
+        assert_eq!(b.read_until(b"\n", Some(3)).await?, b"abc");
+        assert_eq!(b.read(10).await?, b"def");
+        Ok(())
     }
 
     #[tokio::test(start_paused = true)]
-    async fn write_timeout_raises_when_the_port_does_not_drain() {
-        let (a, _b, a_name) = open_pair(|s| s.write_timeout = Some(0.5));
+    async fn write_timeout_raises_when_the_port_does_not_drain() -> Result<(), SerialError> {
+        let (a, _b, a_name) = open_pair(|s| s.write_timeout = Some(0.5))?;
         mock::update(&a_name, |end| end.write_blocked = true);
         assert!(matches!(a.write(b"x").await, Err(SerialError::Timeout(_))));
+        Ok(())
     }
 
     #[tokio::test(start_paused = true)]
-    async fn zero_write_timeout_returns_bytes_written() {
-        let (a, _b, a_name) = open_pair(|s| s.write_timeout = Some(0.0));
+    async fn zero_write_timeout_returns_bytes_written() -> Result<(), SerialError> {
+        let (a, _b, a_name) = open_pair(|s| s.write_timeout = Some(0.0))?;
         mock::update(&a_name, |end| end.write_blocked = true);
         assert_eq!(a.write(b"xy").await, Ok(0));
+        Ok(())
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_write_proceeds_while_a_read_waits() {
-        let (a, b, _) = open_pair(|_| {});
-        let (read, ()) = tokio::join!(b.read(2), async {
-            b.write(b"zz").await.unwrap();
-            assert_eq!(a.read(2).await.unwrap(), b"zz");
-            a.write(b"ok").await.unwrap();
+    async fn a_write_proceeds_while_a_read_waits() -> Result<(), SerialError> {
+        let (a, b, _) = open_pair(|_| {})?;
+        let (read, echoed) = tokio::join!(b.read(2), async {
+            b.write(b"zz").await?;
+            assert_eq!(a.read(2).await?, b"zz");
+            a.write(b"ok").await?;
+            Ok::<(), SerialError>(())
         });
-        assert_eq!(read.unwrap(), b"ok");
+        echoed?;
+        assert_eq!(read?, b"ok");
+        Ok(())
     }
 
     #[tokio::test(start_paused = true)]
-    async fn reads_complete_in_call_order() {
-        let (a, b, _) = open_pair(|_| {});
-        let (first, second, ()) = tokio::join!(b.read(2), b.read(2), async {
-            a.write(b"1122").await.unwrap();
-        });
-        assert_eq!(first.unwrap(), b"11");
-        assert_eq!(second.unwrap(), b"22");
+    async fn reads_complete_in_call_order() -> Result<(), SerialError> {
+        let (a, b, _) = open_pair(|_| {})?;
+        let (first, second, written) = tokio::join!(b.read(2), b.read(2), a.write(b"1122"));
+        written?;
+        assert_eq!(first?, b"11");
+        assert_eq!(second?, b"22");
+        Ok(())
     }
 
     #[tokio::test(start_paused = true)]
-    async fn close_wakes_a_pending_read() {
-        let (_a, b, _) = open_pair(|_| {});
+    async fn close_wakes_a_pending_read() -> Result<(), SerialError> {
+        let (_a, b, _) = open_pair(|_| {})?;
         let (read, ()) = tokio::join!(b.read(1), async {
             tokio::time::sleep(Duration::from_millis(10)).await;
             b.close();
         });
         assert_eq!(read, Err(SerialError::NotOpen));
+        Ok(())
     }
 
     #[tokio::test(start_paused = true)]
-    async fn cancelled_send_break_clears_the_break() {
-        let (a, _b, a_name) = open_pair(|_| {});
+    async fn cancelled_send_break_clears_the_break() -> Result<(), SerialError> {
+        let (a, _b, a_name) = open_pair(|_| {})?;
         let result = tokio::time::timeout(
             Duration::from_millis(10),
             a.send_break(Duration::from_secs(10)),
@@ -618,26 +645,30 @@ mod tests {
         .await;
         assert!(result.is_err());
         assert_eq!(mock::update(&a_name, |end| end.break_on), Some(false));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn closed_and_unconfigured_ports_fail() {
+    async fn closed_and_unconfigured_ports_fail() -> Result<(), SerialError> {
         let core = PortCore::new(None, Settings::default());
         assert_eq!(core.read(1).await, Err(SerialError::NotOpen));
         assert_eq!(core.open(), Err(SerialError::NoPort));
-        let (a, _b, _) = open_pair(|_| {});
+        let (a, _b, _) = open_pair(|_| {})?;
         assert_eq!(a.open(), Err(SerialError::AlreadyOpen));
         a.close();
-        a.open().unwrap();
+        a.open()?;
+        Ok(())
     }
 
     #[tokio::test(start_paused = true)]
-    async fn huge_timeout_waits_like_none() {
-        let (a, b, _) = open_pair(|s| s.timeout = Some(1e300));
-        let (read, ()) = tokio::join!(b.read(2), async {
+    async fn huge_timeout_waits_like_none() -> Result<(), SerialError> {
+        let (a, b, _) = open_pair(|s| s.timeout = Some(1e300))?;
+        let (read, written) = tokio::join!(b.read(2), async {
             tokio::time::sleep(Duration::from_secs(3600)).await;
-            a.write(b"ab").await.unwrap();
+            a.write(b"ab").await
         });
-        assert_eq!(read.unwrap(), b"ab");
+        written?;
+        assert_eq!(read?, b"ab");
+        Ok(())
     }
 }

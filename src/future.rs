@@ -106,8 +106,21 @@ fn complete(shared: &Shared, resolution: Resolution) -> bool {
         // None when the interpreter is finalizing; its loops are gone by then.
         Python::try_attach(|py| {
             for waiter in waiters {
-                // A closed loop raises RuntimeError, and nobody can be waiting on it.
-                let _ = schedule(py, &waiter, &resolution);
+                let closed = waiter
+                    .event_loop
+                    .bind(py)
+                    .call_method0("is_closed")
+                    .and_then(|closed| closed.is_truthy());
+                match closed {
+                    // Nobody can receive a result on a closed loop; scheduling on it would raise.
+                    Ok(true) => {}
+                    Ok(false) => {
+                        if let Err(err) = schedule(py, &waiter, &resolution) {
+                            err.write_unraisable(py, None);
+                        }
+                    }
+                    Err(err) => err.write_unraisable(py, None),
+                }
             }
         });
     }
@@ -115,7 +128,7 @@ fn complete(shared: &Shared, resolution: Resolution) -> bool {
 }
 
 fn cancel_shared(shared: &Shared) -> bool {
-    let handle = lock(&shared.state).abort.take();
+    let handle = lock(&shared.state).abort.clone();
     let cancelled = complete(shared, Err(SerialError::Cancelled));
     // Aborting first would let the task's drop guard store a panic result before this one.
     if cancelled && let Some(handle) = handle {
