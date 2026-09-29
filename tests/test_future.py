@@ -77,12 +77,22 @@ def test_completion_after_the_loop_closed(capfd: pytest.CaptureFixture[str]) -> 
     loop.create_task(waiter())
     loop.run_until_complete(asyncio.sleep(0.01))
     loop.close()
+    assert asyncio.run(waiter()) == b"x"
     assert future.wait() == b"x"
     assert "panicked" not in capfd.readouterr().err
 
 
 def test_panicking_operation_raises() -> None:
     future = _testing.delayed(b"x", -1)
-    with pytest.raises(SerialException):
+    with pytest.raises(SerialException, match="panicked"):
         future.wait(timeout=5)
     assert future.done()
+
+
+def test_cancel_always_reports_cancelled() -> None:
+    futures = [_testing.delayed(b"x", 10) for _ in range(200)]
+    for future in futures:
+        assert future.cancel()
+    for future in futures:
+        with pytest.raises(asyncio.CancelledError):
+            future.wait()
