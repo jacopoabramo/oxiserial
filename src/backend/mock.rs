@@ -80,10 +80,10 @@ pub fn update<R>(port: &str, f: impl FnOnce(&mut EndState) -> R) -> Option<R> {
     let mut state = lock(&mock.pair);
     let end = &mut state.ends[mock.side];
     let result = f(end);
-    if !end.write_blocked {
-        if let Some(waker) = end.write_waker.take() {
-            waker.wake();
-        }
+    if !end.write_blocked
+        && let Some(waker) = end.write_waker.take()
+    {
+        waker.wake();
     }
     Some(result)
 }
