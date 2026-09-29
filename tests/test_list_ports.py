@@ -4,6 +4,7 @@ from oxiserial.tools.list_ports import ListPortInfo, comports
 
 
 def test_usb_info_matches_pyserial_format() -> None:
+    """Build the description and hardware id from the USB fields."""
     port = ListPortInfo("/dev/ttyUSB0")
     port.vid = 0x0403
     port.pid = 0x6001
@@ -21,10 +22,12 @@ def test_usb_info_matches_pyserial_format() -> None:
 
 
 def test_comports_returns_port_info() -> None:
+    """Return only ListPortInfo objects from comports."""
     assert all(isinstance(port, ListPortInfo) for port in comports())
 
 
 def test_equality_compares_device_only() -> None:
+    """Compare and hash ports by device alone."""
     port = ListPortInfo("COM3")
     assert port == ListPortInfo("COM3")
     assert hash(port) == hash(ListPortInfo("COM3"))
@@ -34,16 +37,20 @@ def test_equality_compares_device_only() -> None:
 
 
 def test_sorted_orders_ports_naturally() -> None:
+    """Sort ports so that COM2 comes before COM10."""
     ports = sorted([ListPortInfo("COM10"), ListPortInfo("COM2"), ListPortInfo("COM1")])
     assert [port.device for port in ports] == ["COM1", "COM2", "COM10"]
 
 
 def test_ordering_against_other_types_raises() -> None:
+    """Raise TypeError when ordering a port against another type."""
     with pytest.raises(TypeError):
         ListPortInfo("COM1") < 5  # type: ignore[operator]  # noqa: B015
 
 
 def test_subclass_and_dynamic_attributes() -> None:
+    """Allow ListPortInfo subclasses and new attributes on instances."""
+
     class Tagged(ListPortInfo):
         def tag(self) -> str:
             return f"tag:{self.name}"

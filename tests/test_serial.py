@@ -23,6 +23,7 @@ from oxiserial import _testing  # noqa: E402
 
 @pytest.fixture
 def ports(mock_pair: tuple[str, str]) -> Iterator[tuple[Serial, Serial]]:
+    """Provide two connected open mock ports and close them afterwards."""
     a = Serial(mock_pair[0], timeout=1)
     b = Serial(mock_pair[1], timeout=1)
     yield a, b
@@ -31,12 +32,14 @@ def ports(mock_pair: tuple[str, str]) -> Iterator[tuple[Serial, Serial]]:
 
 
 def test_write_then_read(ports: tuple[Serial, Serial]) -> None:
+    """Read back the bytes written to the peer port."""
     a, b = ports
     assert a.write(b"hello") == 5
     assert b.read(5) == b"hello"
 
 
 def test_timeout_returns_partial_data(ports: tuple[Serial, Serial]) -> None:
+    """Return partial data when the timeout expires before all bytes arrive."""
     a, b = ports
     b.timeout = 0.1
     a.write(b"ab")
@@ -44,6 +47,7 @@ def test_timeout_returns_partial_data(ports: tuple[Serial, Serial]) -> None:
 
 
 def test_lines(ports: tuple[Serial, Serial]) -> None:
+    """Read lines with read_until, readline, readlines and iteration."""
     a, b = ports
     a.write(b"one\ntwo\n")
     assert b.read_until() == b"one\n"
@@ -56,6 +60,7 @@ def test_lines(ports: tuple[Serial, Serial]) -> None:
 
 
 def test_readinto(ports: tuple[Serial, Serial]) -> None:
+    """Fill a buffer with the bytes read."""
     a, b = ports
     buffer = bytearray(4)
     a.write(b"abcd")
@@ -66,6 +71,7 @@ def test_readinto(ports: tuple[Serial, Serial]) -> None:
 def test_write_timeout(
     ports: tuple[Serial, Serial], mock_pair: tuple[str, str]
 ) -> None:
+    """Raise SerialTimeoutException when a write cannot finish in time."""
     a, _ = ports
     _testing.mock_block_writes(mock_pair[0], True)
     a.write_timeout = 0.05
@@ -74,6 +80,7 @@ def test_write_timeout(
 
 
 def test_modem_lines_cross_over(ports: tuple[Serial, Serial]) -> None:
+    """Show the RTS and DTR lines of one port as inputs on the peer."""
     a, b = ports
     a.rts = False
     assert not b.cts
@@ -84,6 +91,7 @@ def test_modem_lines_cross_over(ports: tuple[Serial, Serial]) -> None:
 
 
 def test_buffers(ports: tuple[Serial, Serial]) -> None:
+    """Count bytes in the input buffer and empty it on reset."""
     a, b = ports
     a.write(b"abc")
     assert b.in_waiting == 3
@@ -94,6 +102,7 @@ def test_buffers(ports: tuple[Serial, Serial]) -> None:
 def test_settings_apply_to_an_open_port(
     ports: tuple[Serial, Serial], mock_pair: tuple[str, str]
 ) -> None:
+    """Apply setting changes to a port that is open."""
     a, b = ports
     a.baudrate = 115200
     assert _testing.mock_state(mock_pair[0])["baudrate"] == 115200
@@ -102,6 +111,7 @@ def test_settings_apply_to_an_open_port(
 
 
 def test_break(ports: tuple[Serial, Serial], mock_pair: tuple[str, str]) -> None:
+    """Set and clear the break condition."""
     a, _ = ports
     a.send_break(0.01)
     assert _testing.mock_state(mock_pair[0])["break"] is False
@@ -110,6 +120,7 @@ def test_break(ports: tuple[Serial, Serial], mock_pair: tuple[str, str]) -> None
 
 
 def test_open_close_lifecycle(mock_pair: tuple[str, str]) -> None:
+    """Follow the open and close rules for a port from creation to close."""
     port = Serial()
     with pytest.raises(SerialException):
         port.open()
@@ -136,11 +147,13 @@ def test_open_close_lifecycle(mock_pair: tuple[str, str]) -> None:
     ],
 )
 def test_invalid_settings_raise_value_error(kwargs: dict[str, object]) -> None:
+    """Raise ValueError for each invalid constructor setting."""
     with pytest.raises(ValueError):
         Serial(**kwargs)  # type: ignore[arg-type]
 
 
 def test_ctrl_c_aborts_a_blocking_read(ports: tuple[Serial, Serial]) -> None:
+    """Interrupt a blocking read with Ctrl-C and keep the port usable."""
     a, b = ports
     b.timeout = None
     threading.Timer(0.1, _thread.interrupt_main).start()
@@ -154,6 +167,7 @@ def test_ctrl_c_aborts_a_blocking_read(ports: tuple[Serial, Serial]) -> None:
 def test_close_from_another_thread_ends_a_blocked_read(
     ports: tuple[Serial, Serial],
 ) -> None:
+    """Fail a blocked read when another thread closes the port."""
     _, b = ports
     b.timeout = None
     threading.Timer(0.1, b.close).start()
@@ -162,6 +176,7 @@ def test_close_from_another_thread_ends_a_blocked_read(
 
 
 def test_write_while_a_read_is_blocked(ports: tuple[Serial, Serial]) -> None:
+    """Write from one thread while another is blocked reading."""
     a, b = ports
     results: list[bytes] = []
     reader = threading.Thread(target=lambda: results.append(b.read(3)))
@@ -175,6 +190,7 @@ def test_write_while_a_read_is_blocked(ports: tuple[Serial, Serial]) -> None:
 
 
 def test_write_accepts_bytes_like_and_str(ports: tuple[Serial, Serial]) -> None:
+    """Accept bytes-like objects and str in write, sending str as UTF-8."""
     a, b = ports
     a.write(bytearray(b"a"))
     a.write(memoryview(b"b"))
@@ -186,6 +202,7 @@ def test_write_accepts_bytes_like_and_str(ports: tuple[Serial, Serial]) -> None:
 
 
 def test_write_accepts_whatever_bytearray_accepts(ports: tuple[Serial, Serial]) -> None:
+    """Accept in write anything that bytearray accepts and reject the rest."""
     a, b = ports
     assert a.write([2, 3]) == 2  # type: ignore[arg-type]
     assert a.write(array.array("H", [1])) == 2
@@ -197,6 +214,7 @@ def test_write_accepts_whatever_bytearray_accepts(ports: tuple[Serial, Serial]) 
 
 
 def test_flush_returns_after_a_write(ports: tuple[Serial, Serial]) -> None:
+    """Return from flush once written data is transmitted."""
     a, b = ports
     a.write(b"abc")
     a.flush()
@@ -204,6 +222,8 @@ def test_flush_returns_after_a_write(ports: tuple[Serial, Serial]) -> None:
 
 
 def test_subclass_can_add_parameters_and_attributes(mock_pair: tuple[str, str]) -> None:
+    """Support subclasses with extra constructor parameters and attributes."""
+
     class MySerial(Serial):
         def __init__(self, port: str, extra: str, **kwargs: Any) -> None:
             super().__init__(port, **kwargs)
@@ -221,6 +241,7 @@ def test_subclass_can_add_parameters_and_attributes(mock_pair: tuple[str, str]) 
 
 
 def test_numeric_settings_are_coerced_like_pyserial() -> None:
+    """Coerce numeric settings like pyserial and reject non-numeric ones."""
     port = Serial(baudrate=9600.0, bytesize=8.0)  # type: ignore[arg-type]
     assert port.baudrate == 9600 and port.bytesize == 8
     port.baudrate = "19200"  # type: ignore[assignment]
@@ -232,6 +253,7 @@ def test_numeric_settings_are_coerced_like_pyserial() -> None:
 
 
 def test_dsrdtr_none_follows_rtscts() -> None:
+    """Follow rtscts when dsrdtr is None."""
     assert Serial(rtscts=True, dsrdtr=None).dsrdtr is True
     assert Serial(rtscts=True).dsrdtr is False
     port = Serial(rtscts=True)
@@ -240,6 +262,7 @@ def test_dsrdtr_none_follows_rtscts() -> None:
 
 
 def test_apply_settings_accepts_any_mapping() -> None:
+    """Accept any mapping in apply_settings and leave other settings alone."""
     port = Serial()
     port.apply_settings(MappingProxyType({"baudrate": 4800, "timeout": 2}))
     assert port.baudrate == 4800 and port.timeout == 2
@@ -248,6 +271,7 @@ def test_apply_settings_accepts_any_mapping() -> None:
 
 
 def test_exit_accepts_any_arguments(mock_pair: tuple[str, str]) -> None:
+    """Close the port from __exit__ whatever arguments it receives."""
     port = Serial(mock_pair[0])
     port.__exit__()
     assert not port.is_open
@@ -257,6 +281,7 @@ def test_exit_accepts_any_arguments(mock_pair: tuple[str, str]) -> None:
 def test_send_break_rejects_invalid_durations(
     ports: tuple[Serial, Serial], duration: float
 ) -> None:
+    """Reject negative and NaN break durations without starting a break."""
     a, _ = ports
     with pytest.raises(ValueError):
         a.send_break(duration)
@@ -266,6 +291,7 @@ def test_send_break_rejects_invalid_durations(
 def test_open_and_close_go_through_overridable_methods(
     mock_pair: tuple[str, str],
 ) -> None:
+    """Call the overridden open and close methods from the context manager."""
     calls: list[str] = []
 
     class Recording(Serial):
@@ -287,6 +313,7 @@ def test_open_and_close_go_through_overridable_methods(
 
 
 def test_flags_accept_any_truthy_value(mock_pair: tuple[str, str]) -> None:
+    """Accept any truthy or falsy value for the boolean settings."""
     port = Serial(mock_pair[0], rtscts=0, xonxoff=1)  # type: ignore[arg-type]
     try:
         assert port.rtscts is False and port.xonxoff is True and port.dsrdtr is False
@@ -299,6 +326,7 @@ def test_flags_accept_any_truthy_value(mock_pair: tuple[str, str]) -> None:
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the missing path is POSIX only")
 def test_opening_a_missing_port_reports_the_errno() -> None:
+    """Report the OS error number when the device does not exist."""
     with pytest.raises(SerialException) as info:
         Serial("/dev/oxiserial-does-not-exist")
     assert info.value.errno is not None
@@ -307,6 +335,7 @@ def test_opening_a_missing_port_reports_the_errno() -> None:
 def test_read_all_portstr_and_repr(
     ports: tuple[Serial, Serial], mock_pair: tuple[str, str]
 ) -> None:
+    """Read all buffered bytes and show the port in portstr and repr."""
     a, b = ports
     a.write(b"xyz")
     assert b.in_waiting == 3
@@ -320,6 +349,7 @@ def test_read_all_portstr_and_repr(
 
 
 def test_baudrate_enum_and_nonstandard_rates(mock_pair: tuple[str, str]) -> None:
+    """Accept Baudrate members and rates outside the standard list."""
     port = Serial(mock_pair[0], Baudrate.B115200)
     try:
         assert port.baudrate == 115200
@@ -331,6 +361,7 @@ def test_baudrate_enum_and_nonstandard_rates(mock_pair: tuple[str, str]) -> None
 
 
 def test_read_until_accepts_bytes_like(ports: tuple[Serial, Serial]) -> None:
+    """Accept any bytes-like terminator in read_until."""
     a, b = ports
     a.write(b"ab;cd;")
     assert b.read_until(bytearray(b";")) == b"ab;"

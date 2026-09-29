@@ -10,6 +10,7 @@ from oxiserial import _testing  # noqa: E402
 
 
 def test_wait_returns_the_value() -> None:
+    """Return the value from wait once the operation finishes."""
     future = _testing.delayed(b"x", 0.05)
     assert not future.done()
     assert future.wait() == b"x"
@@ -19,6 +20,7 @@ def test_wait_returns_the_value() -> None:
 
 
 def test_await_and_wait_see_the_same_result(run: Runner) -> None:
+    """Give awaiting tasks and wait the same result."""
     future = _testing.delayed(b"x", 0.05)
 
     async def one() -> bytes:
@@ -32,6 +34,7 @@ def test_await_and_wait_see_the_same_result(run: Runner) -> None:
 
 
 def test_wait_timeout_leaves_the_operation_running() -> None:
+    """Raise TimeoutError from wait without stopping the operation."""
     future = _testing.delayed(b"x", 0.3)
     with pytest.raises(TimeoutError):
         future.wait(timeout=0.01)
@@ -39,6 +42,7 @@ def test_wait_timeout_leaves_the_operation_running() -> None:
 
 
 def test_result_before_completion_raises() -> None:
+    """Raise InvalidStateError when result is read before the operation finishes."""
     future = _testing.delayed(b"x", 5)
     with pytest.raises(asyncio.InvalidStateError):
         future.result()
@@ -46,6 +50,7 @@ def test_result_before_completion_raises() -> None:
 
 
 def test_cancel_ends_the_operation() -> None:
+    """Cancel a running operation once and report False afterwards."""
     future = _testing.delayed(b"x", 10)
     assert future.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -54,6 +59,7 @@ def test_cancel_ends_the_operation() -> None:
 
 
 def test_cancelled_await_cancels_the_operation(run: Runner) -> None:
+    """Cancel the operation when the awaiting task is cancelled."""
     future = _testing.delayed(b"x", 10)
 
     async def main() -> None:
@@ -67,6 +73,7 @@ def test_cancelled_await_cancels_the_operation(run: Runner) -> None:
 
 
 def test_completion_after_the_loop_closed(capfd: pytest.CaptureFixture[str]) -> None:
+    """Finish quietly when the awaiting loop has already closed."""
     future = _testing.delayed(b"x", 0.5)
 
     async def waiter() -> bytes:
@@ -85,6 +92,7 @@ def test_completion_after_the_loop_closed(capfd: pytest.CaptureFixture[str]) -> 
 
 
 def test_panicking_operation_raises() -> None:
+    """Raise SerialException from an operation whose task panicked."""
     future = _testing.panic_in_task()
     with pytest.raises(SerialException, match="panicked"):
         future.wait(timeout=5)
@@ -93,11 +101,13 @@ def test_panicking_operation_raises() -> None:
 
 @pytest.mark.parametrize("delay", [-1, float("nan"), float("inf")])
 def test_delayed_rejects_negative_delay(delay: float) -> None:
+    """Reject negative and non-finite delays with ValueError."""
     with pytest.raises(ValueError):
         _testing.delayed(b"x", delay)
 
 
 def test_cancel_always_reports_cancelled() -> None:
+    """Report every cancel of a pending operation as successful."""
     futures = [_testing.delayed(b"x", 10) for _ in range(200)]
     for future in futures:
         assert future.cancel()

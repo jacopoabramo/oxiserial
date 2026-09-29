@@ -9,6 +9,8 @@ from oxiserial.aio import Serial
 
 
 def test_async_read_and_write(mock_pair: tuple[str, str], run: Runner) -> None:
+    """Write and read bytes between two async ports."""
+
     async def main() -> bytes:
         async with (
             Serial(mock_pair[0], timeout=1) as a,
@@ -21,6 +23,7 @@ def test_async_read_and_write(mock_pair: tuple[str, str], run: Runner) -> None:
 
 
 def test_futures_from_sync_code(mock_pair: tuple[str, str]) -> None:
+    """Wait on the futures of async ports from synchronous code."""
     a = Serial(mock_pair[0], timeout=1)
     b = Serial(mock_pair[1], timeout=1)
     a.write(b"x\n").wait()
@@ -32,6 +35,8 @@ def test_futures_from_sync_code(mock_pair: tuple[str, str]) -> None:
 def test_cancelled_read_leaves_later_data(
     mock_pair: tuple[str, str], run: Runner
 ) -> None:
+    """Keep bytes that arrive after a read was cancelled."""
+
     async def main() -> bytes:
         async with Serial(mock_pair[0]) as a, Serial(mock_pair[1]) as b:
             with pytest.raises(TimeoutError):
@@ -43,6 +48,8 @@ def test_cancelled_read_leaves_later_data(
 
 
 def test_read_and_write_overlap(mock_pair: tuple[str, str], run: Runner) -> None:
+    """Run a pending read and a write on the same port at once."""
+
     async def main() -> list[object]:
         async with (
             Serial(mock_pair[0], timeout=1) as a,
@@ -54,6 +61,8 @@ def test_read_and_write_overlap(mock_pair: tuple[str, str], run: Runner) -> None
 
 
 def test_write_str_is_utf8(mock_pair: tuple[str, str], run: Runner) -> None:
+    """Send a str written to an async port as UTF-8."""
+
     async def main() -> tuple[int, bytes]:
         async with (
             Serial(mock_pair[0], timeout=1) as a,
@@ -67,6 +76,8 @@ def test_write_str_is_utf8(mock_pair: tuple[str, str], run: Runner) -> None:
 def test_subclass_can_add_parameters_under_async_with(
     mock_pair: tuple[str, str], run: Runner
 ) -> None:
+    """Support subclasses with extra constructor parameters in async with."""
+
     class MySerial(Serial):
         def __init__(self, port: str, extra: str, **kwargs: Any) -> None:
             super().__init__(port, **kwargs)
@@ -85,6 +96,8 @@ def test_subclass_can_add_parameters_under_async_with(
 
 
 def test_exit_closes_the_port(mock_pair: tuple[str, str], run: Runner) -> None:
+    """Close the port when leaving an async with block."""
+
     async def main() -> bool:
         async with Serial(mock_pair[0]) as a:
             pass
@@ -96,6 +109,7 @@ def test_exit_closes_the_port(mock_pair: tuple[str, str], run: Runner) -> None:
 def test_async_with_calls_overridable_open_and_close(
     mock_pair: tuple[str, str], run: Runner
 ) -> None:
+    """Call the overridden open and close methods from async with."""
     calls: list[str] = []
 
     class Recording(Serial):
@@ -118,6 +132,7 @@ def test_async_with_calls_overridable_open_and_close(
 
 
 def test_read_all_and_send_break_return_futures(mock_pair: tuple[str, str]) -> None:
+    """Return futures from read_all and send_break."""
     a = Serial(mock_pair[0], timeout=1)
     b = Serial(mock_pair[1], timeout=1)
     a.write(b"abc").wait()
@@ -128,6 +143,7 @@ def test_read_all_and_send_break_return_futures(mock_pair: tuple[str, str]) -> N
 
 
 def test_dropping_a_port_ends_its_pending_read(mock_pair: tuple[str, str]) -> None:
+    """Fail a pending read with PortNotOpenError when the port is dropped."""
     port = Serial(mock_pair[0])
     pending = port.read(1)
     del port
