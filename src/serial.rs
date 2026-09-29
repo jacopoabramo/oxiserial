@@ -557,14 +557,6 @@ impl SerialBase {
         })
     }
 
-    fn readable(&self) -> bool {
-        true
-    }
-
-    fn writable(&self) -> bool {
-        true
-    }
-
     fn fileno(&self, py: Python<'_>) -> PyResult<i32> {
         match self.detached(py, PortCore::fileno)? {
             Some(fd) => Ok(fd),
@@ -724,6 +716,24 @@ impl Serial {
     #[pyo3(signature = (hint = -1), text_signature = "(self, /, hint=-1)")]
     fn readlines(slf: &Bound<'_, Self>, hint: isize) -> PyResult<Py<PyAny>> {
         Self::run(slf.py(), ops::readlines(Self::core(slf), hint))
+    }
+
+    fn readable(&self) -> bool {
+        true
+    }
+
+    fn writable(&self) -> bool {
+        true
+    }
+
+    fn seekable(&self) -> bool {
+        false
+    }
+
+    #[getter]
+    fn closed(slf: &Bound<'_, Self>) -> bool {
+        let core = Self::core(slf);
+        !slf.py().detach(|| core.is_open())
     }
 
     fn readinto(slf: &Bound<'_, Self>, b: &Bound<'_, PyAny>) -> PyResult<usize> {

@@ -1,5 +1,6 @@
 import _thread
 import array
+import io
 import sys
 import threading
 import time
@@ -366,3 +367,19 @@ def test_read_until_accepts_bytes_like(ports: tuple[Serial, Serial]) -> None:
     a.write(b"ab;cd;")
     assert b.read_until(bytearray(b";")) == b"ab;"
     assert b.read_until(memoryview(b";")) == b"cd;"
+
+
+def test_text_io_over_a_port(mock_pair: tuple[str, str]) -> None:
+    """Read and write lines through io.TextIOWrapper over a port."""
+    a = Serial(mock_pair[0], timeout=1)
+    b = Serial(mock_pair[1], timeout=0.1)
+    text = io.TextIOWrapper(io.BufferedRWPair(b, b), newline="\n")  # type: ignore[type-var]
+    a.write(b"hello\n")
+    assert text.readline() == "hello\n"
+    text.write("bye\n")
+    text.flush()
+    assert a.readline() == b"bye\n"
+    assert not b.closed
+    text.close()
+    assert b.closed
+    a.close()

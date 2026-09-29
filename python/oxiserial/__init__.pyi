@@ -287,10 +287,6 @@ class SerialBase:
         ValueError
             If a value is not valid.
         """
-    def readable(self) -> bool:
-        """Return `True`."""
-    def writable(self) -> bool:
-        """Return `True`."""
     def fileno(self) -> int:
         """Return the file descriptor of the open port.
 
@@ -307,6 +303,18 @@ class Serial(SerialBase):
 
     The constructor opens the port when `port` is given. As a context manager
     the port is closed on exit; iterating over it yields lines.
+
+    Notes
+    -----
+    The `io` module uses [`readable`][oxiserial.Serial.readable],
+    [`writable`][oxiserial.Serial.writable],
+    [`closed`][oxiserial.Serial.closed],
+    [`readinto`][oxiserial.Serial.readinto], [`write`][oxiserial.Serial.write]
+    and [`close`][oxiserial.SerialBase.close], so
+    [`io.TextIOWrapper`](https://docs.python.org/3/library/io.html#io.TextIOWrapper)
+    can wrap the port as `io.TextIOWrapper(io.BufferedRWPair(ser, ser))`.
+    `io.BufferedReader` and `io.BufferedWriter` also call
+    [`seekable`][oxiserial.Serial.seekable].
     """
 
     def __init__(
@@ -381,6 +389,31 @@ class Serial(SerialBase):
         ------
         PortNotOpenError
             If the port is closed, also while the read waits.
+        """
+    @property
+    def closed(self) -> bool:
+        """`True` when the port is not open.
+
+        For compatibility with
+        [`io.TextIOWrapper`](https://docs.python.org/3/library/io.html#io.TextIOWrapper).
+        """
+    def readable(self) -> bool:
+        """Return `True`.
+
+        For compatibility with
+        [`io.TextIOWrapper`](https://docs.python.org/3/library/io.html#io.TextIOWrapper).
+        """
+    def writable(self) -> bool:
+        """Return `True`.
+
+        For compatibility with
+        [`io.TextIOWrapper`](https://docs.python.org/3/library/io.html#io.TextIOWrapper).
+        """
+    def seekable(self) -> bool:
+        """Return `False`.
+
+        For compatibility with
+        [`io.TextIOWrapper`](https://docs.python.org/3/library/io.html#io.TextIOWrapper).
         """
     def readinto(self, b: Buffer) -> int:
         """Read into the writable buffer `b` and return the number of bytes stored.
