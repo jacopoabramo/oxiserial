@@ -6,6 +6,7 @@ from oxiserial.aio import Serial as AioSerial
 
 
 def sync_api(port: Serial) -> None:
+    """Type the blocking methods to return bytes, int and lists of bytes."""
     assert_type(port.read(), bytes)
     assert_type(port.write(b"x"), int)
     assert_type(port.write("x"), int)
@@ -15,6 +16,7 @@ def sync_api(port: Serial) -> None:
 
 
 async def aio_api(port: AioSerial) -> None:
+    """Type the async methods to return futures that resolve to plain values."""
     assert_type(port.read(), Future[bytes])
     assert_type(port.read().wait(), bytes)
     assert_type(await port.read(), bytes)
