@@ -1,4 +1,5 @@
 mod errors;
+mod settings;
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
