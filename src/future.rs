@@ -105,9 +105,9 @@ fn complete(shared: &Shared, resolution: Resolution) -> bool {
     if !waiters.is_empty() {
         // None when the interpreter is finalizing; its loops are gone by then.
         Python::try_attach(|py| {
-            for waiter in &waiters {
+            for waiter in waiters {
                 // A closed loop raises RuntimeError, and nobody can be waiting on it.
-                let _ = schedule(py, waiter, &resolution);
+                let _ = schedule(py, &waiter, &resolution);
             }
         });
     }
@@ -119,6 +119,20 @@ fn cancel_shared(shared: &Shared) -> bool {
         handle.abort();
     }
     complete(shared, Err(SerialError::Cancelled))
+}
+
+struct CompleteOnDrop(Arc<Shared>);
+
+impl Drop for CompleteOnDrop {
+    fn drop(&mut self) {
+        complete(
+            &self.0,
+            Err(SerialError::Os {
+                errno: None,
+                message: "the operation panicked".into(),
+            }),
+        );
+    }
 }
 
 /// A port operation running on the runtime.
@@ -135,6 +149,8 @@ impl OpFuture {
         let shared = Arc::new(Shared::default());
         let task_shared = Arc::clone(&shared);
         let task = runtime()?.spawn(async move {
+            // tokio catches task panics, so without this guard waiters would never wake.
+            let _guard = CompleteOnDrop(Arc::clone(&task_shared));
             complete(&task_shared, op.await);
         });
         let mut state = lock(&shared.state);
@@ -167,9 +183,10 @@ impl OpFuture {
     fn wait(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Py<PyAny>> {
         // Short slices let Ctrl-C through while the wait is otherwise unbounded.
         const SLICE: Duration = Duration::from_millis(50);
-        let deadline = timeout
-            .filter(|t| t.is_finite())
-            .map(|t| Instant::now() + Duration::from_secs_f64(t.max(0.0)));
+        let deadline = timeout.and_then(|t| {
+            let span = Duration::try_from_secs_f64(t.max(0.0)).ok()?;
+            Instant::now().checked_add(span)
+        });
         let shared = &*self.shared;
         loop {
             let finished = py.detach(|| {
