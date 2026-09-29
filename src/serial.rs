@@ -12,7 +12,7 @@ use pyo3::types::{
 use crate::errors::SerialError;
 use crate::future::{OpFuture, Outcome};
 use crate::port::PortCore;
-use crate::settings::{self, Parity, Settings, StopBits};
+use crate::settings::{self, Parity, Seconds, Settings, StopBits};
 
 pub(crate) const LF: &[u8] = b"\n";
 
@@ -158,6 +158,36 @@ impl<'a, 'py> FromPyObject<'a, 'py> for Truthy {
     }
 }
 
+impl<'a, 'py> FromPyObject<'a, 'py> for Seconds {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        let value: &Bound<'py, PyAny> = &obj;
+        if value.is_instance_of::<PyInt>()
+            && let Ok(int) = value.extract::<i64>()
+        {
+            return Ok(Seconds::Int(int));
+        }
+        value.extract::<f64>().map(Seconds::Float).map_err(|_| {
+            // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): message.
+            PyValueError::new_err(format!("Not a valid timeout: {}", describe(value)))
+        })
+    }
+}
+
+impl<'py> IntoPyObject<'py> for Seconds {
+    type Target = PyAny;
+    type Output = Bound<'py, PyAny>;
+    type Error = std::convert::Infallible;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        Ok(match self {
+            Seconds::Int(value) => value.into_pyobject(py)?.into_any(),
+            Seconds::Float(value) => value.into_pyobject(py)?.into_any(),
+        })
+    }
+}
+
 /// A byte size given as a number equal to 5, 6, 7 or 8.
 pub(crate) struct Bytesize(pub u8);
 
@@ -258,12 +288,12 @@ impl SerialBase {
         bytesize: Bytesize,
         parity: &str,
         stopbits: f64,
-        timeout: Option<f64>,
+        timeout: Option<Seconds>,
         xonxoff: Truthy,
         rtscts: Truthy,
-        write_timeout: Option<f64>,
+        write_timeout: Option<Seconds>,
         dsrdtr: Option<Truthy>,
-        inter_byte_timeout: Option<f64>,
+        inter_byte_timeout: Option<Seconds>,
         exclusive: Option<Truthy>,
     ) -> PyResult<()> {
         let settings = Settings {
@@ -386,34 +416,34 @@ impl SerialBase {
     }
 
     #[getter]
-    fn timeout(&self) -> Option<f64> {
+    fn timeout(&self) -> Option<Seconds> {
         self.core.settings().timeout
     }
 
     #[setter]
-    fn set_timeout(&self, py: Python<'_>, value: Option<f64>) -> PyResult<()> {
+    fn set_timeout(&self, py: Python<'_>, value: Option<Seconds>) -> PyResult<()> {
         let value = settings::seconds(value)?;
         self.update(py, move |s| s.timeout = value)
     }
 
     #[getter]
-    fn write_timeout(&self) -> Option<f64> {
+    fn write_timeout(&self) -> Option<Seconds> {
         self.core.settings().write_timeout
     }
 
     #[setter]
-    fn set_write_timeout(&self, py: Python<'_>, value: Option<f64>) -> PyResult<()> {
+    fn set_write_timeout(&self, py: Python<'_>, value: Option<Seconds>) -> PyResult<()> {
         let value = settings::seconds(value)?;
         self.update(py, move |s| s.write_timeout = value)
     }
 
     #[getter]
-    fn inter_byte_timeout(&self) -> Option<f64> {
+    fn inter_byte_timeout(&self) -> Option<Seconds> {
         self.core.settings().inter_byte_timeout
     }
 
     #[setter]
-    fn set_inter_byte_timeout(&self, py: Python<'_>, value: Option<f64>) -> PyResult<()> {
+    fn set_inter_byte_timeout(&self, py: Python<'_>, value: Option<Seconds>) -> PyResult<()> {
         let value = settings::seconds(value)?;
         self.update(py, move |s| s.inter_byte_timeout = value)
     }
@@ -578,7 +608,7 @@ impl SerialBase {
         let rtscts = fetch("rtscts")?
             .map(|v| v.extract::<Truthy>())
             .transpose()?;
-        let timeout = |key| -> PyResult<Option<Option<f64>>> {
+        let timeout = |key| -> PyResult<Option<Option<Seconds>>> {
             fetch(key)?
                 .map(|v| Ok(settings::seconds(v.extract()?)?))
                 .transpose()
@@ -733,12 +763,12 @@ impl Serial {
         bytesize: Bytesize,
         parity: &str,
         stopbits: f64,
-        timeout: Option<f64>,
+        timeout: Option<Seconds>,
         xonxoff: Truthy,
         rtscts: Truthy,
-        write_timeout: Option<f64>,
+        write_timeout: Option<Seconds>,
         dsrdtr: Option<Truthy>,
-        inter_byte_timeout: Option<f64>,
+        inter_byte_timeout: Option<Seconds>,
         exclusive: Option<Truthy>,
     ) -> PyResult<()> {
         SerialBase::init(

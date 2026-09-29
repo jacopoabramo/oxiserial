@@ -177,7 +177,7 @@ mod tests {
 
     #[tokio::test]
     async fn written_bytes_come_back_in_order() -> Result<(), SerialError> {
-        let port = open(|s| s.timeout = Some(0.0))?;
+        let port = open(|s| s.timeout = Some(0.0.into()))?;
         port.write(b"abc").await?;
         port.write(b"de").await?;
         assert_eq!(port.in_waiting()?, 5);
@@ -188,7 +188,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_full_queue_blocks_a_write_until_a_read_frees_space() -> Result<(), SerialError> {
-        let port = open(|s| s.write_timeout = Some(0.5))?;
+        let port = open(|s| s.write_timeout = Some(0.5.into()))?;
         assert!(matches!(
             port.write(&[0; super::CAPACITY + 1]).await,
             Err(SerialError::Timeout(_))

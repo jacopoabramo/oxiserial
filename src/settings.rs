@@ -59,6 +59,28 @@ impl StopBits {
     }
 }
 
+/// A timeout in seconds, kept as the kind of number it was given as so an int reads back as an int.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Seconds {
+    Int(i64),
+    Float(f64),
+}
+
+impl Seconds {
+    pub fn as_f64(self) -> f64 {
+        match self {
+            Seconds::Int(value) => value as f64,
+            Seconds::Float(value) => value,
+        }
+    }
+}
+
+impl From<f64> for Seconds {
+    fn from(value: f64) -> Self {
+        Seconds::Float(value)
+    }
+}
+
 /// Port configuration, with pyserial's defaults.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
@@ -66,9 +88,9 @@ pub struct Settings {
     pub bytesize: u8,
     pub parity: Parity,
     pub stopbits: StopBits,
-    pub timeout: Option<f64>,
-    pub write_timeout: Option<f64>,
-    pub inter_byte_timeout: Option<f64>,
+    pub timeout: Option<Seconds>,
+    pub write_timeout: Option<Seconds>,
+    pub inter_byte_timeout: Option<Seconds>,
     pub xonxoff: bool,
     pub rtscts: bool,
     pub dsrdtr: bool,
@@ -123,10 +145,13 @@ pub fn bytesize(value: i64) -> Result<u8, SerialError> {
 }
 
 /// Validates a timeout in seconds; `None` means no timeout.
-pub fn seconds(value: Option<f64>) -> Result<Option<f64>, SerialError> {
+pub fn seconds(value: Option<Seconds>) -> Result<Option<Seconds>, SerialError> {
     // Message text matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
     match value {
-        Some(v) if v.is_nan() || v < 0.0 => {
+        Some(Seconds::Int(v)) if v < 0 => {
+            Err(SerialError::Value(format!("Not a valid timeout: {v}")))
+        }
+        Some(Seconds::Float(v)) if v.is_nan() || v < 0.0 => {
             Err(SerialError::Value(format!("Not a valid timeout: {v:?}")))
         }
         _ => Ok(value),
@@ -134,8 +159,8 @@ pub fn seconds(value: Option<f64>) -> Result<Option<f64>, SerialError> {
 }
 
 /// Converts timeout to Duration; values that overflow become None (no deadline).
-pub fn duration(value: Option<f64>) -> Option<Duration> {
-    value.and_then(|s| Duration::try_from_secs_f64(s).ok())
+pub fn duration(value: Option<Seconds>) -> Option<Duration> {
+    value.and_then(|s| Duration::try_from_secs_f64(s.as_f64()).ok())
 }
 
 #[cfg(test)]
@@ -148,8 +173,9 @@ mod tests {
         assert!(bytesize(9).is_err());
         assert!(Parity::from_name("X").is_err());
         assert!(StopBits::from_value(3.0).is_err());
-        assert!(seconds(Some(-0.5)).is_err());
-        assert!(seconds(Some(f64::NAN)).is_err());
+        assert!(seconds(Some((-0.5).into())).is_err());
+        assert!(seconds(Some(f64::NAN.into())).is_err());
+        assert!(seconds(Some(Seconds::Int(-1))).is_err());
     }
 
     #[test]
@@ -168,10 +194,13 @@ mod tests {
 
     #[test]
     fn huge_and_infinite_timeouts_mean_no_deadline() {
-        assert!(seconds(Some(f64::INFINITY)).is_ok());
-        assert!(seconds(Some(1e300)).is_ok());
-        assert_eq!(duration(Some(f64::INFINITY)), None);
-        assert_eq!(duration(Some(1e300)), None);
-        assert_eq!(duration(Some(1.5)), Some(Duration::from_millis(1500)));
+        assert!(seconds(Some(f64::INFINITY.into())).is_ok());
+        assert!(seconds(Some(1e300.into())).is_ok());
+        assert_eq!(duration(Some(f64::INFINITY.into())), None);
+        assert_eq!(duration(Some(1e300.into())), None);
+        assert_eq!(
+            duration(Some(1.5.into())),
+            Some(Duration::from_millis(1500))
+        );
     }
 }
