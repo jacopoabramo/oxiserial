@@ -1,10 +1,13 @@
 import asyncio
+import errno
 import os
 import time
 from collections.abc import Callable, Coroutine
 from typing import Any
 
 import pytest
+
+import oxiserial
 
 Runner = Callable[[Coroutine[Any, Any, Any]], Any]
 
@@ -37,6 +40,19 @@ def real_pair(request: pytest.FixtureRequest) -> tuple[str, str]:
             break
         time.sleep(0.05)
     return names
+
+
+@pytest.fixture
+def modem_pair(real_pair: tuple[str, str]) -> tuple[str, str]:
+    """Provide the real pair if it has modem control lines, or skip."""
+    with oxiserial.Serial(real_pair[1]) as port:
+        try:
+            _ = port.cts
+        except oxiserial.SerialException as err:
+            if err.errno in (errno.ENOTTY, errno.EINVAL):
+                pytest.skip("the port pair has no modem control lines")
+            raise
+    return real_pair
 
 
 @pytest.fixture(params=["asyncio", "rsloop"])

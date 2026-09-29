@@ -109,26 +109,26 @@ def test_a_cancelled_read_leaves_later_data(
 
 
 def test_a_non_blocking_write_held_by_flow_control_is_sent_later(
-    real_pair: tuple[str, str],
+    modem_pair: tuple[str, str],
 ) -> None:
     """Send a non-blocking write held by flow control once the peer allows it."""
-    with Serial(real_pair[1], timeout=2) as b:
+    with Serial(modem_pair[1], timeout=2) as b:
         b.rts = False
-        with Serial(real_pair[0], rtscts=True, write_timeout=0) as a:
+        with Serial(modem_pair[0], rtscts=True, write_timeout=0) as a:
             assert a.write(b"x" * 100) == 100
             b.rts = True
             assert b.read(100) == b"x" * 100
 
 
-def test_reconfiguring_keeps_lowered_lines_low(real_pair: tuple[str, str]) -> None:
+def test_reconfiguring_keeps_lowered_lines_low(modem_pair: tuple[str, str]) -> None:
     """Keep lowered RTS and DTR low through repeated baud rate and timeout changes."""
     a = Serial()
-    a.port = real_pair[0]
+    a.port = modem_pair[0]
     a.dtr = False
     a.rts = False
     seen_high: list[str] = []
     done = threading.Event()
-    with Serial(real_pair[1]) as b:
+    with Serial(modem_pair[1]) as b:
         a.open()
 
         def poll() -> None:
