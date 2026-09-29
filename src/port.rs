@@ -636,6 +636,14 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn send_break_clears_the_break_when_done() -> Result<(), SerialError> {
+        let (a, _b, a_name) = open_pair(|_| {})?;
+        a.send_break(Duration::from_millis(10)).await?;
+        assert_eq!(mock::update(&a_name, |end| end.break_on), Some(false));
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn cancelled_send_break_clears_the_break() -> Result<(), SerialError> {
         let (a, _b, a_name) = open_pair(|_| {})?;
         let result = tokio::time::timeout(

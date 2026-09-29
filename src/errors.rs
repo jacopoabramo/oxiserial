@@ -96,28 +96,19 @@ impl From<tokio_serial::Error> for SerialError {
 
 impl From<SerialError> for PyErr {
     fn from(err: SerialError) -> PyErr {
+        let message = err.to_string();
         match err {
             SerialError::Os {
-                errno: Some(errno),
-                message,
+                errno: Some(errno), ..
             } => SerialException::new_err((errno, message)),
-            SerialError::Os {
-                errno: None,
-                message,
-            } => SerialException::new_err(message),
-            SerialError::Timeout(message) => SerialTimeoutException::new_err(message),
-            SerialError::NotOpen => {
-                PortNotOpenError::new_err("Attempting to use a port that is not open")
-            }
-            SerialError::AlreadyOpen => SerialException::new_err("Port is already open."),
-            SerialError::NoPort => {
-                SerialException::new_err("Port must be configured before it can be used.")
-            }
-            SerialError::Value(message) => PyValueError::new_err(message),
+            SerialError::Os { errno: None, .. }
+            | SerialError::AlreadyOpen
+            | SerialError::NoPort
+            | SerialError::Forked => SerialException::new_err(message),
+            SerialError::Timeout(_) => SerialTimeoutException::new_err(message),
+            SerialError::NotOpen => PortNotOpenError::new_err(message),
+            SerialError::Value(_) => PyValueError::new_err(message),
             SerialError::Cancelled => CancelledError::new_err(()),
-            SerialError::Forked => SerialException::new_err(
-                "oxiserial cannot be used in a child process created by fork()",
-            ),
         }
     }
 }

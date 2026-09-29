@@ -31,6 +31,7 @@ package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = ["error::pytest.PytestUnraisableExceptionWarning"]
 
 [tool.mypy]
 strict = true

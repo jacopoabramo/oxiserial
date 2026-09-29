@@ -79,7 +79,9 @@ def test_completion_after_the_loop_closed(capfd: pytest.CaptureFixture[str]) -> 
     loop.close()
     assert asyncio.run(waiter()) == b"x"
     assert future.wait() == b"x"
-    assert "panicked" not in capfd.readouterr().err
+    err = capfd.readouterr().err
+    assert "panicked" not in err
+    assert "Exception ignored" not in err
 
 
 def test_panicking_operation_raises() -> None:
