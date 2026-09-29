@@ -1,5 +1,6 @@
 import _thread
 import array
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -8,7 +9,13 @@ from typing import Any
 
 import pytest
 
-from oxiserial import PortNotOpenError, Serial, SerialException, SerialTimeoutException
+from oxiserial import (
+    Baudrate,
+    PortNotOpenError,
+    Serial,
+    SerialException,
+    SerialTimeoutException,
+)
 
 pytest.importorskip("oxiserial._testing")
 from oxiserial import _testing  # noqa: E402
@@ -254,3 +261,91 @@ def test_send_break_rejects_invalid_durations(
     with pytest.raises(ValueError):
         a.send_break(duration)
     assert not a.break_condition
+
+
+def test_open_and_close_go_through_overridable_methods(
+    mock_pair: tuple[str, str],
+) -> None:
+    calls: list[str] = []
+
+    class Recording(Serial):
+        def open(self) -> None:
+            calls.append("open")
+            super().open()
+
+        def close(self) -> None:
+            calls.append("close")
+            super().close()
+
+    with Recording(mock_pair[0]):
+        pass
+    port = Recording()
+    port.port = mock_pair[1]
+    with port:
+        assert port.is_open
+    assert calls == ["open", "close", "open", "close"]
+
+
+def test_flags_accept_any_truthy_value(mock_pair: tuple[str, str]) -> None:
+    port = Serial(mock_pair[0], rtscts=0, xonxoff=1)  # type: ignore[arg-type]
+    try:
+        assert port.rtscts is False and port.xonxoff is True and port.dsrdtr is False
+        port.dtr = 0  # type: ignore[assignment]
+        assert port.dtr is False
+        assert _testing.mock_state(mock_pair[0])["dtr"] is False
+    finally:
+        port.close()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the missing path is POSIX only")
+def test_opening_a_missing_port_reports_the_errno() -> None:
+    with pytest.raises(SerialException) as info:
+        Serial("/dev/oxiserial-does-not-exist")
+    assert info.value.errno is not None
+
+
+def test_pyserial_aliases_and_repr(
+    ports: tuple[Serial, Serial], mock_pair: tuple[str, str]
+) -> None:
+    a, b = ports
+    a.write(b"xyz")
+    assert b.inWaiting() == 3
+    assert b.read_all() == b"xyz"
+    a.setRTS(0)
+    assert not b.getCTS()
+    a.setDTR(False)
+    assert not b.getDSR() and not b.getCD() and not b.getRI()
+    a.setBreak()
+    assert _testing.mock_state(mock_pair[0])["break"] is True
+    a.setBreak(0)
+    a.sendBreak(0.01)
+    assert _testing.mock_state(mock_pair[0])["break"] is False
+    a.writeTimeout = 2
+    a.interCharTimeout = 0.5
+    assert a.write_timeout == 2 and a.inter_byte_timeout == 0.5
+    b.flushInput()
+    b.flushOutput()
+    assert a.isOpen() and a.portstr == mock_pair[0]
+    assert repr(a) == (
+        f"Serial<id=0x{id(a):x}, open=True>(port={mock_pair[0]!r}, baudrate=9600, "
+        "bytesize=8, parity='N', stopbits=1, timeout=1.0, xonxoff=False, "
+        "rtscts=False, dsrdtr=False)"
+    )
+
+
+def test_baudrate_enum_and_nonstandard_rates(mock_pair: tuple[str, str]) -> None:
+    port = Serial(mock_pair[0], Baudrate.B115200)
+    try:
+        assert port.baudrate == 115200
+        port.baudrate = 250000
+        assert _testing.mock_state(mock_pair[0])["baudrate"] == 250000
+        assert Serial.BAUDRATES == tuple(Baudrate)
+    finally:
+        port.close()
+
+
+def test_read_until_accepts_bytes_like(ports: tuple[Serial, Serial]) -> None:
+    a, b = ports
+    a.write(b"ab;cd;")
+    assert b.read_until(bytearray(b";")) == b"ab;"
+    assert b.read_until(memoryview(b";")) == b"cd;"

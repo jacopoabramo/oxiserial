@@ -5,7 +5,7 @@ use pyo3::types::{PyDict, PyTuple};
 
 use crate::future::{OpFuture, Outcome};
 use crate::port::PortCore;
-use crate::serial::{Baudrate, Bytesize, LF, SerialBase, ops, to_bytes};
+use crate::serial::{Baudrate, Bytesize, SerialBase, Truthy, expected_bytes, ops, to_bytes};
 
 /// Serial port whose I/O methods return futures.
 #[pyclass(name = "Serial", module = "oxiserial.aio", extends = SerialBase, subclass, frozen)]
@@ -31,8 +31,8 @@ impl AioSerial {
     #[pyo3(
         signature = (
             port = None, baudrate = Baudrate(9600), bytesize = Bytesize(8), parity = "N",
-            stopbits = 1.0, timeout = None, xonxoff = false, rtscts = false,
-            write_timeout = None, dsrdtr = Some(false), inter_byte_timeout = None, exclusive = None
+            stopbits = 1.0, timeout = None, xonxoff = Truthy(false), rtscts = Truthy(false),
+            write_timeout = None, dsrdtr = Some(Truthy(false)), inter_byte_timeout = None, exclusive = None
         ),
     )]
     #[allow(clippy::too_many_arguments)]
@@ -44,15 +44,15 @@ impl AioSerial {
         parity: &str,
         stopbits: f64,
         timeout: Option<f64>,
-        xonxoff: bool,
-        rtscts: bool,
+        xonxoff: Truthy,
+        rtscts: Truthy,
         write_timeout: Option<f64>,
-        dsrdtr: Option<bool>,
+        dsrdtr: Option<Truthy>,
         inter_byte_timeout: Option<f64>,
-        exclusive: Option<bool>,
+        exclusive: Option<Truthy>,
     ) -> PyResult<()> {
-        slf.as_super().get().init(
-            slf.py(),
+        SerialBase::init(
+            slf.as_super(),
             port,
             baudrate,
             bytesize,
@@ -73,15 +73,15 @@ impl AioSerial {
         Ok(OpFuture::spawn(ops::read(Self::core(slf), size))?)
     }
 
-    #[pyo3(signature = (expected = LF, size = None), text_signature = "(self, /, expected=b'\\n', size=None)")]
+    #[pyo3(signature = (expected = None, size = None), text_signature = "(self, /, expected=b'\\n', size=None)")]
     fn read_until(
         slf: &Bound<'_, Self>,
-        expected: &[u8],
+        expected: Option<&Bound<'_, PyAny>>,
         size: Option<usize>,
     ) -> PyResult<OpFuture> {
         Ok(OpFuture::spawn(ops::read_until(
             Self::core(slf),
-            expected.to_vec(),
+            expected_bytes(expected)?,
             size,
         ))?)
     }
@@ -112,17 +112,25 @@ impl AioSerial {
         Ok(OpFuture::spawn(ops::send_break(Self::core(slf), duration))?)
     }
 
+    fn read_all<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        slf.call_method1("read", (slf.getattr("in_waiting")?,))
+    }
+
+    #[pyo3(name = "sendBreak", signature = (duration = 0.25))]
+    fn send_break_alias<'py>(slf: &Bound<'py, Self>, duration: f64) -> PyResult<Bound<'py, PyAny>> {
+        slf.call_method1("send_break", (duration,))
+    }
+
     fn __aenter__(slf: &Bound<'_, Self>) -> PyResult<OpFuture> {
-        slf.as_super().get().enter(slf.py())?;
+        SerialBase::enter(slf.as_super())?;
         Ok(OpFuture::ready(Outcome::Object(Arc::new(
             slf.clone().into_any().unbind(),
         ))))
     }
 
     #[pyo3(signature = (*_args))]
-    fn __aexit__(slf: &Bound<'_, Self>, _args: &Bound<'_, PyTuple>) -> OpFuture {
-        let core = Self::core(slf);
-        slf.py().detach(|| core.close());
-        OpFuture::ready(Outcome::Unit)
+    fn __aexit__(slf: &Bound<'_, Self>, _args: &Bound<'_, PyTuple>) -> PyResult<OpFuture> {
+        slf.call_method0("close")?;
+        Ok(OpFuture::ready(Outcome::Unit))
     }
 }

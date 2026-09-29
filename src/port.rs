@@ -163,12 +163,13 @@ impl PortCore {
     }
 
     pub fn open(&self) -> Result<(), SerialError> {
+        // Taken first, as in `update_settings`, so a concurrent settings change is not missed.
+        let mut slot = lock(&self.backend);
         let (port, settings, rts, dtr) = {
             let state = lock(&self.state);
             let port = state.port.clone().ok_or(SerialError::NoPort)?;
             (port, state.settings.clone(), state.rts, state.dtr)
         };
-        let mut slot = lock(&self.backend);
         if slot.is_some() {
             return Err(SerialError::AlreadyOpen);
         }
@@ -195,15 +196,25 @@ impl PortCore {
     }
 
     pub fn set_settings(&self, settings: Settings) -> Result<(), SerialError> {
-        lock(&self.state).settings = settings.clone();
-        self.if_open(|port| {
-            port.configure(&settings)?;
-            let (rts, dtr) = {
-                let state = lock(&self.state);
-                (state.rts, state.dtr)
-            };
-            restore_lines(port, &settings, rts, dtr)
-        })
+        self.update_settings(|current| *current = settings)
+    }
+
+    /// Changes the settings and applies them to an open port, all under the backend lock,
+    /// so concurrent changes are not lost and the port always has the stored settings.
+    pub fn update_settings(&self, change: impl FnOnce(&mut Settings)) -> Result<(), SerialError> {
+        let mut slot = lock(&self.backend);
+        let (settings, rts, dtr) = {
+            let mut state = lock(&self.state);
+            change(&mut state.settings);
+            (state.settings.clone(), state.rts, state.dtr)
+        };
+        match slot.as_mut() {
+            Some(port) => {
+                port.configure(&settings)?;
+                restore_lines(port.as_mut(), &settings, rts, dtr)
+            }
+            None => Ok(()),
+        }
     }
 
     pub fn set_rts(&self, level: bool) -> Result<(), SerialError> {

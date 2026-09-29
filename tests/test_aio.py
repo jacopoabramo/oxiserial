@@ -4,6 +4,7 @@ from typing import Any
 import pytest
 
 from conftest import Runner
+from oxiserial import PortNotOpenError
 from oxiserial.aio import Serial
 
 
@@ -90,3 +91,45 @@ def test_exit_closes_the_port(mock_pair: tuple[str, str], run: Runner) -> None:
         return a.is_open
 
     assert run(main()) is False
+
+
+def test_async_with_calls_overridable_open_and_close(
+    mock_pair: tuple[str, str], run: Runner
+) -> None:
+    calls: list[str] = []
+
+    class Recording(Serial):
+        def open(self) -> None:
+            calls.append("open")
+            super().open()
+
+        def close(self) -> None:
+            calls.append("close")
+            super().close()
+
+    async def main() -> None:
+        port = Recording()
+        port.port = mock_pair[0]
+        async with port:
+            pass
+
+    run(main())
+    assert calls == ["open", "close"]
+
+
+def test_read_all_and_send_break_return_futures(mock_pair: tuple[str, str]) -> None:
+    a = Serial(mock_pair[0], timeout=1)
+    b = Serial(mock_pair[1], timeout=1)
+    a.write(b"abc").wait()
+    assert b.read_all().wait() == b"abc"
+    assert a.sendBreak(0.01).wait() is None
+    a.close()
+    b.close()
+
+
+def test_dropping_a_port_ends_its_pending_read(mock_pair: tuple[str, str]) -> None:
+    port = Serial(mock_pair[0])
+    pending = port.read(1)
+    del port
+    with pytest.raises(PortNotOpenError):
+        pending.wait(timeout=2)

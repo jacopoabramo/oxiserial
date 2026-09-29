@@ -76,6 +76,7 @@ fn _oxiserial(m: &Bound<'_, PyModule>) -> PyResult<()> {
         py.get_type::<errors::PortNotOpenError>(),
     )?;
 
+    m.add("Baudrate", serial::baudrate_enum(py)?)?;
     m.add_class::<serial::SerialBase>()?;
     m.add_class::<serial::Serial>()?;
 
