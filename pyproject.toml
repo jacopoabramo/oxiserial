@@ -4,10 +4,45 @@ build-backend = "maturin"
 
 [project]
 name = "oxiserial"
-requires-python = ">=3.8"
+requires-python = ">=3.11"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
-    "Programming Language :: Python :: Implementation :: PyPy",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Free Threading :: 2 - Beta",
+    "Typing :: Typed",
 ]
 dynamic = ["version"]
+
+[project.optional-dependencies]
+rsloop = [
+    "rsloop>=0.1.53",
+]
+
+[tool.maturin]
+python-source = "python"
+module-name = "oxiserial._oxiserial"
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+strict = true
+files = ["python", "tests"]
+
+[dependency-groups]
+dev = [
+    "maturin>=1.15.0",
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+    "rsloop>=0.1.53",
+]
+rsloop = [
+    "rsloop>=0.1.53",
+]
