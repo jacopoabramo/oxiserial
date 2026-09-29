@@ -76,8 +76,9 @@ class PortNotOpenError(SerialException):
 class SerialBase:
     """Settings, modem lines and buffer control shared by the blocking and async ports.
 
-    Assigning a property on an open port reconfigures the port at once.
-    An invalid value raises `ValueError`.
+    Assigning a setting on an open port reconfigures the port at once, except
+    `exclusive`, which applies at the next open. An invalid value raises
+    `ValueError`.
     """
 
     BAUDRATES: ClassVar[tuple[Baudrate, ...]]
@@ -145,7 +146,9 @@ class SerialBase:
     def inter_byte_timeout(self) -> float | None:
         """Longest gap in seconds between two bytes of a read before it ends.
 
-        `None` sets no limit.
+        The limit starts once the first byte has arrived. `None` sets no limit.
+        [`readline`][oxiserial.Serial.readline], `readlines` and iteration ignore
+        it and apply `timeout` to each byte instead.
         """
     @inter_byte_timeout.setter
     def inter_byte_timeout(self, value: float | None) -> None: ...
@@ -161,14 +164,17 @@ class SerialBase:
     def rtscts(self, value: bool) -> None: ...
     @property
     def dsrdtr(self) -> bool:
-        """Whether DSR/DTR hardware flow control is enabled."""
+        """Whether DSR/DTR hardware flow control is enabled.
+
+        Assigning `None` follows `rtscts`.
+        """
     @dsrdtr.setter
     def dsrdtr(self, value: bool | None) -> None: ...
     @property
     def exclusive(self) -> bool | None:
         """Whether the port is opened for exclusive access.
 
-        `None` uses the platform default.
+        `None` uses the platform default. A change applies at the next open.
         """
     @exclusive.setter
     def exclusive(self, value: bool | None) -> None: ...
@@ -274,7 +280,13 @@ class SerialBase:
     def get_settings(self) -> dict[str, Any]:
         """Return the current settings as a dictionary that `apply_settings` accepts."""
     def apply_settings(self, d: Mapping[str, Any]) -> None:
-        """Apply the settings in `d`; settings it does not name are left unchanged."""
+        """Apply the settings in `d`; settings it does not name are left unchanged.
+
+        Raises
+        ------
+        ValueError
+            If a value is not valid.
+        """
     def readable(self) -> bool:
         """Return `True`."""
     def writable(self) -> bool:
@@ -331,6 +343,8 @@ class Serial(SerialBase):
         ------
         PortNotOpenError
             If the port is closed, also while the read waits.
+        SerialException
+            If the device is disconnected.
         """
     def read_until(self, expected: Buffer = b"\n", size: int | None = None) -> bytes:
         """Read until `expected` arrives, `size` bytes are read or the read times out.
@@ -341,17 +355,22 @@ class Serial(SerialBase):
         ------
         PortNotOpenError
             If the port is closed, also while the read waits.
+        SerialException
+            If the device is disconnected.
         """
     def readline(self, size: int = -1) -> bytes:
         """Read one line, ending at a newline or after `size` bytes.
 
         A negative `size` sets no limit. `timeout` applies to each byte, so a
-        line that keeps arriving is not cut short.
+        line that keeps arriving is not cut short. `inter_byte_timeout` has no
+        effect.
 
         Raises
         ------
         PortNotOpenError
             If the port is closed, also while the read waits.
+        SerialException
+            If the device is disconnected.
         """
     def readlines(self, hint: int = -1) -> list[bytes]:
         """Read lines until one read times out with no data.
@@ -403,7 +422,13 @@ class Serial(SerialBase):
             If the port is closed.
         """
     def read_all(self) -> bytes:
-        """Read the bytes currently in the input buffer."""
+        """Read the bytes currently in the input buffer.
+
+        Raises
+        ------
+        PortNotOpenError
+            If the port is closed.
+        """
     def __enter__(self) -> Self:
         """Open the port if a port is set and it is closed, and return it."""
     def __exit__(self, *args: object) -> None:

@@ -31,6 +31,7 @@ class ListPortInfo:
         """Describe `device`; `name` is its last path component.
 
         `description` and `hwid` start as `"n/a"` and the USB fields as `None`.
+        `skip_link_detection` is accepted and has no effect.
         """
     def usb_description(self) -> str:
         """Return a description from `product` and `interface`, or from `name`."""
@@ -49,7 +50,13 @@ class ListPortInfo:
     def __iter__(self) -> Iterator[str]:
         """Iterate over `device`, `description` and `hwid`."""
     def __lt__(self, other: ListPortInfo, /) -> bool:
-        """Compare `device` in natural order."""
+        """Compare `device` in natural order.
+
+        Raises
+        ------
+        TypeError
+            If `other` is not a `ListPortInfo`.
+        """
     def __eq__(self, other: object, /) -> bool:
         """Return `True` if `other` is a `ListPortInfo` with the same `device`."""
     def __hash__(self) -> int: ...
@@ -58,7 +65,9 @@ def comports(include_links: bool = False) -> list[ListPortInfo]:
     """Return the serial ports the system reports.
 
     `vid`, `pid`, `serial_number`, `manufacturer`, `product` and `location`
-    are filled for USB ports. `include_links` is accepted and has no effect.
+    are filled for USB ports, and `description` and `hwid` are built from them.
+    Other ports keep `"n/a"` for both. `interface` is always `None`.
+    `include_links` is accepted and has no effect.
 
     Raises
     ------

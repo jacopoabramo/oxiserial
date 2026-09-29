@@ -31,6 +31,11 @@ class Future(Generic[_T_co]):
             If `timeout` seconds pass first. The operation keeps running.
         asyncio.CancelledError
             If the operation was cancelled.
+        SerialException
+            If the operation failed. Subclasses such as
+            [`PortNotOpenError`][oxiserial.PortNotOpenError] and
+            [`SerialTimeoutException`][oxiserial.SerialTimeoutException] are
+            raised as they are.
         """
     def done(self) -> bool:
         """Return `True` if the operation has finished, failed or been cancelled."""
@@ -38,8 +43,8 @@ class Future(Generic[_T_co]):
         """Cancel the operation if it is still running.
 
         Return `True` if this call cancelled it and `False` if it had already
-        finished. Bytes a cancelled read has not yet taken stay in the input
-        buffer.
+        finished. Bytes a cancelled read had already collected are discarded;
+        the ones it had not taken stay in the input buffer.
         """
     def result(self) -> _T_co:
         """Return the result of a finished operation without waiting.
@@ -50,9 +55,18 @@ class Future(Generic[_T_co]):
             If the operation has not finished.
         asyncio.CancelledError
             If the operation was cancelled.
+        SerialException
+            If the operation failed, including its subclasses as in
+            [`wait`][oxiserial.aio.Future.wait].
         """
     def __await__(self) -> Generator[Any, None, _T_co]:
-        """Wait for the result inside the running event loop."""
+        """Wait for the result inside the running event loop.
+
+        Raises
+        ------
+        RuntimeError
+            If no event loop is running.
+        """
     def __class_getitem__(cls, key: Any) -> Any: ...
 
 class Serial(SerialBase):
@@ -92,7 +106,9 @@ class Serial(SerialBase):
     def read(self, size: int = 1) -> Future[bytes]:
         """Read up to `size` bytes.
 
-        See [`Serial.read`][oxiserial.Serial.read].
+        See [`Serial.read`][oxiserial.Serial.read]. Errors such as
+        [`PortNotOpenError`][oxiserial.PortNotOpenError] and `SerialException`
+        for a disconnected device are raised through the future.
         """
     def read_until(
         self, expected: Buffer = b"\n", size: int | None = None
@@ -128,11 +144,24 @@ class Serial(SerialBase):
         See [`Serial.send_break`][oxiserial.Serial.send_break].
         """
     def read_all(self) -> Future[bytes]:
-        """Read the bytes currently in the input buffer."""
+        """Read the bytes currently in the input buffer.
+
+        Raises
+        ------
+        PortNotOpenError
+            If the port is closed. This is raised by the call, not through the
+            future.
+        """
     def __aenter__(self) -> Future[Self]:
         """Open the port if a port is set and it is closed.
 
-        The future yields the port.
+        The port opens during this call and the future yields it.
+
+        Raises
+        ------
+        SerialException
+            If the device cannot be opened. This is raised by the call, not
+            through the future.
         """
     def __aexit__(self, *args: object) -> Future[None]:
         """Close the port."""
