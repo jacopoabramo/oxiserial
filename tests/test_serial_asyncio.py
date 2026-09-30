@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -238,3 +239,34 @@ def test_unplugged_device_ends_the_connection(
     transport, exc = run(main())
     assert isinstance(exc, SerialException)
     assert not transport.serial.is_open
+
+
+def test_stream_reader_limit_keeps_every_byte_in_order(
+    mock_pair: tuple[str, str], run: Runner
+) -> None:
+    """Deliver every byte in order while a small reader limit pauses reading."""
+    peer = Serial(mock_pair[1], timeout=1)
+    payload = bytes(i % 251 for i in range(200_000))
+
+    def send() -> None:
+        for i in range(0, len(payload), 97):
+            peer.write(payload[i : i + 97])
+
+    async def main() -> bytes:
+        reader, writer = await serial_asyncio.open_serial_connection(
+            url=mock_pair[0], limit=64
+        )
+        sender = threading.Thread(target=send)
+        sender.start()
+        received = bytearray()
+        while len(received) < len(payload):
+            received += await asyncio.wait_for(reader.read(1000), 5)
+        sender.join()
+        writer.close()
+        await writer.wait_closed()
+        return bytes(received)
+
+    try:
+        assert run(main()) == payload
+    finally:
+        peer.close()

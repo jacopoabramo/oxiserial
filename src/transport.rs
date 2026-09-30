@@ -1,4 +1,6 @@
+use std::ffi::CStr;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use pyo3::exceptions::{PyNotImplementedError, PyRuntimeError, PyStopIteration, PyValueError};
 use pyo3::prelude::*;
@@ -14,6 +16,8 @@ use crate::serial::{SerialBase, to_bytes};
 const READ_SIZE: usize = 65_536;
 // Matches pyserial-asyncio (BSD-3-Clause, see LICENSES/pyserial-asyncio.txt): default limits.
 const HIGH_WATER: usize = 64 * 1024;
+/// How long a read waits before ending empty, so the transport can check its loop.
+const READ_WAIT: Duration = Duration::from_secs(1);
 
 type Step = Box<dyn FnOnce(Python<'_>) -> PyResult<Py<PyAny>> + Send>;
 
@@ -60,7 +64,9 @@ impl Deferred {
         _value: Option<&Bound<'_, PyAny>>,
         _traceback: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
-        lock(&self.step).take();
+        // Dropped after the lock is released: the work may hold Python objects.
+        let step = lock(&self.step).take();
+        drop(step);
         let exception = if exception.is_instance_of::<PyType>() {
             exception.call0()?
         } else {
@@ -70,7 +76,8 @@ impl Deferred {
     }
 
     fn close(&self) {
-        lock(&self.step).take();
+        let step = lock(&self.step).take();
+        drop(step);
     }
 }
 
@@ -91,6 +98,8 @@ struct State {
     protocol_paused: bool,
     lost: bool,
     close_exc: Option<Py<PyAny>>,
+    /// The flush a graceful close waits for before `connection_lost`.
+    drain: Option<Py<PyAny>>,
 }
 
 /// An asyncio transport over a serial port, with pyserial-asyncio's behaviour.
@@ -135,7 +144,10 @@ impl SerialTransport {
             "call_soon",
             (protocol.getattr("connection_made")?, &transport),
         )?;
-        event_loop.call_method1("call_soon", (Self::callback(&transport, Self::on_start)?,))?;
+        event_loop.call_method1(
+            "call_soon",
+            (Self::callback(&transport, c"on_start", Self::on_start)?,),
+        )?;
         Ok(transport)
     }
 
@@ -143,16 +155,47 @@ impl SerialTransport {
     /// argument (`None` when there is none).
     fn callback<'py>(
         slf: &Bound<'py, Self>,
+        name: &'static CStr,
         handler: Handler,
     ) -> PyResult<Bound<'py, PyCFunction>> {
         let transport = slf.clone().unbind();
-        PyCFunction::new_closure(slf.py(), None, None, move |args, _kwargs| {
+        PyCFunction::new_closure(slf.py(), Some(name), None, move |args, _kwargs| {
             let py = args.py();
             let arg = args
                 .get_item(0)
                 .unwrap_or_else(|_| py.None().into_bound(py));
             handler(transport.bind(py), &arg)
         })
+    }
+
+    /// Runs `handler(transport, future)` on the transport's loop once `future` is done.
+    ///
+    /// The future's completion is forwarded from whatever thread finishes it. When the loop
+    /// has closed, nothing would ever close the port, so the port is closed there instead.
+    fn when_done(
+        slf: &Bound<'_, Self>,
+        future: &Bound<'_, OpFuture>,
+        name: &'static CStr,
+        handler: Handler,
+    ) -> PyResult<()> {
+        let py = slf.py();
+        let on_loop = Self::callback(slf, name, handler)?.unbind();
+        let transport = slf.clone().unbind();
+        let forward =
+            PyCFunction::new_closure(py, Some(c"forward"), None, move |args, _kwargs| {
+                let py = args.py();
+                let this = transport.bind(py).get();
+                let scheduled = this.event_loop.call_method1(
+                    py,
+                    "call_soon_threadsafe",
+                    (on_loop.bind(py), args.get_item(0)?),
+                );
+                if scheduled.is_err() {
+                    this.serial.bind(py).call_method0("close")?;
+                }
+                PyResult::Ok(())
+            })?;
+        OpFuture::on_done_here(future, forward.into_any().unbind())
     }
 
     fn on_start(slf: &Bound<'_, Self>, _arg: &Bound<'_, PyAny>) -> PyResult<()> {
@@ -170,45 +213,56 @@ impl SerialTransport {
         }
         let core = Arc::clone(&this.core);
         let future = OpFuture::start(py, async move {
-            core.read_available(READ_SIZE).await.map(Outcome::Bytes)
+            match tokio::time::timeout(READ_WAIT, core.read_available(READ_SIZE)).await {
+                Ok(result) => result.map(Outcome::Bytes),
+                // Ending the wait now and then lets the transport notice a closed loop.
+                Err(_) => Ok(Outcome::Bytes(Vec::new())),
+            }
         })?;
         let future = Bound::new(py, future)?;
         lock(&this.state).read = Some(future.clone().into_any().unbind());
-        future.call_method1("add_done_callback", (Self::callback(slf, Self::on_read)?,))?;
-        Ok(())
+        Self::when_done(slf, &future, c"on_read", Self::on_read)
     }
 
     fn on_read(slf: &Bound<'_, Self>, future: &Bound<'_, PyAny>) -> PyResult<()> {
         let py = slf.py();
         let this = slf.get();
-        lock(&this.state).read = None;
-        if future.call_method0("cancelled")?.is_truthy()? {
-            return Ok(());
-        }
-        match future.call_method0("result") {
-            Ok(data) => {
-                let protocol = {
-                    let mut state = lock(&this.state);
-                    if state.closing {
-                        return Ok(());
-                    }
-                    if state.reading_paused {
-                        state
-                            .held
-                            .extend_from_slice(data.cast::<PyBytes>()?.as_bytes());
-                        return Ok(());
-                    }
-                    state.protocol.as_ref().map(|p| p.clone_ref(py))
-                };
-                // The next read starts first, so a failing data_received does not stop reading.
-                Self::start_reading(slf)?;
-                if let Some(protocol) = protocol {
-                    protocol.call_method1(py, "data_received", (data,))?;
-                }
-                Ok(())
+        {
+            let mut state = lock(&this.state);
+            // A read that close or abort took over; its result is not wanted.
+            if !state
+                .read
+                .as_ref()
+                .is_some_and(|read| read.bind(py).is(future))
+            {
+                return Ok(());
             }
-            Err(err) => Self::close_with(slf, Some(err.into_value(py).into_any())),
+            state.read = None;
         }
+        let data = match future.call_method0("result") {
+            Ok(data) => data.cast::<PyBytes>()?.clone(),
+            Err(err) => return Self::close_with(slf, Some(err.into_value(py).into_any())),
+        };
+        let protocol = {
+            let mut state = lock(&this.state);
+            if state.closing {
+                return Ok(());
+            }
+            if state.reading_paused {
+                // No read starts while paused, so this holds at most one read's bytes.
+                state.held.extend_from_slice(data.as_bytes());
+                return Ok(());
+            }
+            state.protocol.as_ref().map(|p| p.clone_ref(py))
+        };
+        // The next read starts first, so a failing data_received does not stop reading.
+        Self::start_reading(slf)?;
+        if !data.as_bytes().is_empty()
+            && let Some(protocol) = protocol
+        {
+            protocol.call_method1(py, "data_received", (data,))?;
+        }
+        Ok(())
     }
 
     fn start_writing(slf: &Bound<'_, Self>) -> PyResult<()> {
@@ -230,19 +284,24 @@ impl SerialTransport {
         )?;
         let future = Bound::new(py, future)?;
         lock(&this.state).write = Some(future.clone().into_any().unbind());
-        future.call_method1("add_done_callback", (Self::callback(slf, Self::on_write)?,))?;
-        Ok(())
+        Self::when_done(slf, &future, c"on_write", Self::on_write)
     }
 
     fn on_write(slf: &Bound<'_, Self>, future: &Bound<'_, PyAny>) -> PyResult<()> {
+        let py = slf.py();
         let this = slf.get();
         {
             let mut state = lock(&this.state);
+            // A write that abort cancelled and took over.
+            if !state
+                .write
+                .as_ref()
+                .is_some_and(|write| write.bind(py).is(future))
+            {
+                return Ok(());
+            }
             state.write = None;
             state.in_flight = 0;
-        }
-        if future.call_method0("cancelled")?.is_truthy()? {
-            return Ok(());
         }
         if let Err(err) = future.call_method0("result") {
             return Self::fatal_error(slf, err);
@@ -252,7 +311,8 @@ impl SerialTransport {
             let state = lock(&this.state);
             (
                 !state.queue.is_empty(),
-                state.closing && state.queue.is_empty() && !state.lost,
+                // resume_writing may have started another write, which finishes this instead.
+                state.closing && state.queue.is_empty() && state.write.is_none() && !state.lost,
             )
         };
         if more {
@@ -324,12 +384,19 @@ impl SerialTransport {
 
     fn fatal_error(slf: &Bound<'_, Self>, err: PyErr) -> PyResult<()> {
         let exception = err.into_value(slf.py()).into_any();
-        // Matches pyserial-asyncio (BSD-3-Clause, see LICENSES/pyserial-asyncio.txt): message.
-        Self::report(
-            slf,
-            "Fatal error on serial transport",
-            exception.clone_ref(slf.py()),
-        )?;
+        let explained = {
+            let state = lock(&slf.get().state);
+            state.closing && state.close_exc.is_some()
+        };
+        // A write failing after a read already ended the connection repeats that cause.
+        if !explained {
+            // Matches pyserial-asyncio (BSD-3-Clause, see LICENSES/pyserial-asyncio.txt): message.
+            Self::report(
+                slf,
+                "Fatal write error on serial transport",
+                exception.clone_ref(slf.py()),
+            )?;
+        }
         Self::abort_with(slf, Some(exception))
     }
 
@@ -359,17 +426,26 @@ impl SerialTransport {
 
     fn abort_with(slf: &Bound<'_, Self>, exc: Option<Py<PyAny>>) -> PyResult<()> {
         let py = slf.py();
-        let (read, write) = {
+        let (futures, unused) = {
             let mut state = lock(&slf.get().state);
             state.closing = true;
-            if exc.is_some() {
+            // The first cause is kept: a later error is usually a consequence of it.
+            let unused = if state.close_exc.is_none() {
                 state.close_exc = exc;
-            }
+                None
+            } else {
+                exc
+            };
             state.queue.clear();
             state.in_flight = 0;
-            (state.read.take(), state.write.take())
+            (
+                [state.read.take(), state.write.take(), state.drain.take()],
+                unused,
+            )
         };
-        for future in [read, write].into_iter().flatten() {
+        drop(unused);
+        // Cancelling the drain of a close already under way runs its connection_lost.
+        for future in futures.into_iter().flatten() {
             future.call_method0(py, "cancel")?;
         }
         Self::finish(slf, false)
@@ -386,28 +462,35 @@ impl SerialTransport {
             }
             state.lost = true;
         }
-        let lost = Self::callback(slf, Self::connection_lost)?;
         if drain {
             let core = Arc::clone(&this.core);
             let future = start_write(
                 py,
                 async move { core.flush().await.map(|()| Outcome::Unit) },
             )?;
-            Bound::new(py, future)?.call_method1("add_done_callback", (lost,))?;
+            let future = Bound::new(py, future)?;
+            lock(&this.state).drain = Some(future.clone().into_any().unbind());
+            Self::when_done(slf, &future, c"connection_lost", Self::connection_lost)
         } else {
+            let lost = Self::callback(slf, c"connection_lost", Self::connection_lost)?;
             this.event_loop
                 .call_method1(py, "call_soon", (lost, py.None()))?;
+            Ok(())
         }
-        Ok(())
     }
 
     fn connection_lost(slf: &Bound<'_, Self>, _arg: &Bound<'_, PyAny>) -> PyResult<()> {
         let py = slf.py();
         let this = slf.get();
-        let (protocol, exc) = {
+        let (protocol, exc, drain) = {
             let mut state = lock(&this.state);
-            (state.protocol.take(), state.close_exc.take())
+            (
+                state.protocol.take(),
+                state.close_exc.take(),
+                state.drain.take(),
+            )
         };
+        drop(drain);
         let result = match protocol {
             Some(protocol) => protocol
                 .call_method1(py, "connection_lost", (exc,))
@@ -492,16 +575,12 @@ impl SerialTransport {
         ))
     }
 
-    fn pause_reading(slf: &Bound<'_, Self>) -> PyResult<()> {
-        let read = {
-            let mut state = lock(&slf.get().state);
-            state.reading_paused = true;
-            state.read.take()
-        };
-        if let Some(read) = read {
-            read.call_method0(slf.py(), "cancel")?;
-        }
-        Ok(())
+    /// Stops `data_received` calls until `resume_reading`.
+    ///
+    /// A read already under way is not cancelled, since it may have taken bytes from the
+    /// port; what it returns is held and delivered on resume.
+    fn pause_reading(&self) {
+        lock(&self.state).reading_paused = true;
     }
 
     fn resume_reading(slf: &Bound<'_, Self>) -> PyResult<()> {
@@ -576,7 +655,9 @@ impl SerialTransport {
     }
 
     fn set_protocol(&self, protocol: Py<PyAny>) {
-        lock(&self.state).protocol = Some(protocol);
+        let old = lock(&self.state).protocol.replace(protocol);
+        // Dropped after the lock is released, as dropping it may run Python code.
+        drop(old);
     }
 
     fn __repr__(slf: &Bound<'_, Self>) -> PyResult<String> {

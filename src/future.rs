@@ -326,6 +326,40 @@ impl OpFuture {
         }
     }
 
+    /// Calls `func(future)` on the thread that completes the operation, or at once if it is
+    /// done, with no event loop involved.
+    pub(crate) fn on_done_here(slf: &Bound<'_, Self>, func: Py<PyAny>) -> PyResult<()> {
+        let context = slf
+            .py()
+            .import("contextvars")?
+            .call_method0("copy_context")?
+            .unbind();
+        Self::register(slf, func, context, None);
+        Ok(())
+    }
+
+    fn register(
+        slf: &Bound<'_, Self>,
+        func: Py<PyAny>,
+        context: Py<PyAny>,
+        event_loop: Option<Py<PyAny>>,
+    ) {
+        let callback = Arc::new(Callback {
+            func,
+            future: slf.clone().into_any().unbind(),
+            context,
+            event_loop,
+        });
+        {
+            let mut state = lock(&slf.get().shared.state);
+            if state.result.is_none() {
+                state.callbacks.push(callback);
+                return;
+            }
+        }
+        callback.run_or_report(slf.py(), "call_soon");
+    }
+
     pub fn ready(outcome: Outcome) -> Self {
         Self::resolved(Ok(outcome))
     }
@@ -441,20 +475,12 @@ impl OpFuture {
                 .unbind(),
         };
         let event_loop = py.import("asyncio")?.call_method0("_get_running_loop")?;
-        let callback = Arc::new(Callback {
-            func: r#fn,
-            future: slf.clone().into_any().unbind(),
+        Self::register(
+            slf,
+            r#fn,
             context,
-            event_loop: (!event_loop.is_none()).then(|| event_loop.unbind()),
-        });
-        {
-            let mut state = lock(&slf.get().shared.state);
-            if state.result.is_none() {
-                state.callbacks.push(callback);
-                return Ok(());
-            }
-        }
-        callback.run_or_report(py, "call_soon");
+            (!event_loop.is_none()).then(|| event_loop.unbind()),
+        );
         Ok(())
     }
 

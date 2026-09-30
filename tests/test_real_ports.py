@@ -5,7 +5,7 @@ import time
 import pytest
 
 from conftest import Runner
-from oxiserial import Serial
+from oxiserial import Serial, SerialException
 from oxiserial import aio as serial_asyncio
 from oxiserial.aio import Serial as AioSerial
 
@@ -205,3 +205,25 @@ def test_serial_asyncio_round_trip(real_pair: tuple[str, str], run: Runner) -> N
         return line
 
     assert run(main()) == b"ping\n"
+
+
+def test_serial_asyncio_releases_the_port_after_the_loop_closes(
+    real_pair: tuple[str, str],
+) -> None:
+    """Free the port once its loop has closed, even without transport.close()."""
+
+    async def main() -> None:
+        await serial_asyncio.create_serial_connection(
+            asyncio.get_running_loop(), asyncio.Protocol, real_pair[0]
+        )
+
+    asyncio.run(main())
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            Serial(real_pair[0]).close()
+            return
+        except SerialException:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.1)
