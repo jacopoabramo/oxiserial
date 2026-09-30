@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from conftest import Runner
+from conftest import Runner, wait_until
 from oxiserial import (
     Baudrate,
     PortNotOpenError,
@@ -165,6 +165,36 @@ def test_ctrl_c_aborts_a_blocking_read(ports: tuple[Serial, Serial]) -> None:
     a.write(b"abc")
     b.timeout = 1
     assert b.read(3) == b"abc"
+
+
+def test_ctrl_c_aborts_a_blocked_write(
+    ports: tuple[Serial, Serial], mock_pair: tuple[str, str]
+) -> None:
+    """Interrupt a blocked write with Ctrl-C so none of its bytes are sent later."""
+    a, b = ports
+    _testing.mock_block_writes(mock_pair[0], True)
+    threading.Timer(0.1, _thread.interrupt_main).start()
+    with pytest.raises(KeyboardInterrupt):
+        a.write(b"lost")
+    # The interrupted write is dropped on a worker thread; let that happen before
+    # the port accepts bytes again.
+    time.sleep(0.1)
+    _testing.mock_block_writes(mock_pair[0], False)
+    assert a.write(b"ok") == 2
+    assert b.read(2) == b"ok"
+    assert b.in_waiting == 0
+
+
+def test_ctrl_c_during_send_break_clears_the_break(
+    ports: tuple[Serial, Serial], mock_pair: tuple[str, str]
+) -> None:
+    """Clear the break when Ctrl-C interrupts send_break."""
+    a, _ = ports
+    threading.Timer(0.1, _thread.interrupt_main).start()
+    with pytest.raises(KeyboardInterrupt):
+        a.send_break(10)
+    wait_until(lambda: not _testing.mock_state(mock_pair[0])["break"], "break cleared")
+    assert a.break_condition is False
 
 
 def test_close_from_another_thread_ends_a_blocked_read(
