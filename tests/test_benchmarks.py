@@ -1,7 +1,7 @@
 from collections.abc import Callable
 
 import pytest
-from benchmarks.run import IntegrityError, check, pattern
+from benchmarks.run import IntegrityError, check, main, pattern
 
 
 def swap(data: bytes) -> bytes:
@@ -25,3 +25,11 @@ def test_check_rejects_damaged_data(damage: Callable[[bytes], bytes]) -> None:
     sent = pattern(64)
     with pytest.raises(IntegrityError, match="offset"):
         check("S1", sent, damage(sent))
+
+
+def test_only_rejects_unknown_ids(capsys: pytest.CaptureFixture[str]) -> None:
+    """Exit with a usage error naming the valid ids for an unknown --only id."""
+    with pytest.raises(SystemExit) as info:
+        main(["--only", "L9"])
+    assert info.value.code == 2
+    assert "L1" in capsys.readouterr().err
