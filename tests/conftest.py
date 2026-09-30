@@ -1,6 +1,7 @@
 import asyncio
 import errno
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -99,12 +100,63 @@ def socat_port(tmp_path: Path) -> Generator[Unpluggable, None, None]:
         unplug()
 
 
+def opens(name: str) -> bool:
+    """Return whether the port `name` can be opened right now."""
+    try:
+        oxiserial.Serial(name).close()
+    except oxiserial.SerialException:
+        return False
+    return True
+
+
+def setupc(directory: str, *args: str) -> str:
+    """Run com0com's setupc.exe from `directory` and return its output."""
+    result = subprocess.run(
+        [os.path.join(directory, "setupc.exe"), "--silent", *args],
+        cwd=directory,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+    print(f"setupc {' '.join(args)} -> exit {result.returncode}\n{output}")
+    return output
+
+
+def com0com_port() -> Generator[Unpluggable, None, None]:
+    """Provide a port of a new com0com pair; unplugging removes the pair.
+
+    Needs `COM0COM_DIR` pointing at the directory holding setupc.exe, and
+    administrator rights.
+    """
+    directory = os.environ.get("COM0COM_DIR")
+    if not directory:
+        pytest.skip("com0com is not available (COM0COM_DIR)")
+    name = "COM94"
+    output = setupc(directory, "install", f"PortName={name}", "PortName=COM95")
+    match = re.search(rf"CNCA(\d+) PortName={name}", output)
+    if match is None:
+        pytest.skip(f"setupc did not create {name}")
+    pair = match.group(1)
+    removed = False
+
+    def unplug() -> None:
+        nonlocal removed
+        removed = True
+        setupc(directory, "remove", pair)
+
+    try:
+        wait_until(lambda: opens(name), f"{name} appearing")
+        yield name, unplug
+    finally:
+        if not removed:
+            setupc(directory, "remove", pair)
+
+
 @pytest.fixture
 def unpluggable_port(tmp_path: Path) -> Generator[Unpluggable, None, None]:
     """Provide a port name and a function that unplugs that port, or skip."""
     if sys.platform == "win32":
-        pytest.skip(
-            "no virtual unplug on Windows: an open com0com port does not notice "
-            "its plug-in partner closing"
-        )
-    yield from socat_port(tmp_path)
+        yield from com0com_port()
+    else:
+        yield from socat_port(tmp_path)

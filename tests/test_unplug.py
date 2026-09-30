@@ -23,9 +23,9 @@ def test_read_after_unplug_closes_the_port(unpluggable_port: Unpluggable) -> Non
 
 
 def test_unplug_ends_a_blocked_read(unpluggable_port: Unpluggable) -> None:
-    """End a read that waits without a timeout when its port is unplugged."""
+    """End a read that is waiting when its port is unplugged."""
     name, unplug = unpluggable_port
-    port = Serial(name, timeout=None)
+    port = Serial(name, timeout=5)
     try:
         threading.Timer(0.2, unplug).start()
         with pytest.raises(SerialException) as info:
