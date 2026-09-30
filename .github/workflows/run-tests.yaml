@@ -134,25 +134,6 @@ jobs:
           $ErrorActionPreference = 'Stop'
           "OXISERIAL_PORT_A=$env:PORT_A" >> $env:GITHUB_ENV
           "OXISERIAL_PORT_B=$env:PORT_B" >> $env:GITHUB_ENV
-      - name: Create a plug-in mode pair
-        id: com0com-plugin
-        if: runner.os == 'Windows' && steps.com0com-check.outcome == 'success'
-        continue-on-error: true
-        shell: pwsh
-        env:
-          PORT: COM92
-          PARTNER: COM93
-        run: |
-          $ErrorActionPreference = 'Stop'
-          # With PlugInMode the driver removes PORT whenever PARTNER is closed, which the unplug tests use.
-          Push-Location $env:COM0COM_DIR
-          try {
-            .\setupc.exe --silent install "PortName=$env:PORT,PlugInMode=yes" PortName=$env:PARTNER
-            if ($LASTEXITCODE -ne 0) { throw "setupc install failed with exit code $LASTEXITCODE" }
-          } finally {
-            Pop-Location
-          }
-          "OXISERIAL_PLUGIN_PAIR=$env:PORT,$env:PARTNER" >> $env:GITHUB_ENV
       - run: uv run pytest -v
       - name: Benchmarks
         if: matrix.python == '3.14'

@@ -99,37 +99,12 @@ def socat_port(tmp_path: Path) -> Generator[Unpluggable, None, None]:
         unplug()
 
 
-def opens(name: str) -> bool:
-    """Return whether the port `name` can be opened right now."""
-    try:
-        oxiserial.Serial(name).close()
-    except oxiserial.SerialException:
-        return False
-    return True
-
-
-def plug_in_port() -> Generator[Unpluggable, None, None]:
-    """Provide a com0com plug-in mode port; unplugging closes its partner.
-
-    `OXISERIAL_PLUGIN_PAIR` names the pair as `PORT,PARTNER`, where `PORT` was
-    installed with `PlugInMode=yes` and exists only while `PARTNER` is open.
-    """
-    pair = os.environ.get("OXISERIAL_PLUGIN_PAIR")
-    if not pair:
-        pytest.skip("no com0com plug-in pair given (OXISERIAL_PLUGIN_PAIR)")
-    name, partner_name = pair.split(",")
-    partner = oxiserial.Serial(partner_name)
-    try:
-        wait_until(lambda: opens(name), f"{name} appearing")
-        yield name, partner.close
-    finally:
-        partner.close()
-
-
 @pytest.fixture
 def unpluggable_port(tmp_path: Path) -> Generator[Unpluggable, None, None]:
     """Provide a port name and a function that unplugs that port, or skip."""
     if sys.platform == "win32":
-        yield from plug_in_port()
-    else:
-        yield from socat_port(tmp_path)
+        pytest.skip(
+            "no virtual unplug on Windows: an open com0com port does not notice "
+            "its plug-in partner closing"
+        )
+    yield from socat_port(tmp_path)
