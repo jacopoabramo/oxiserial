@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -222,12 +223,13 @@ impl Drop for CompleteOnDrop {
     }
 }
 
-/// A port operation running on the runtime.
-/// What awaiting a finished future iterates: it stops at once with the result, so the
-/// awaiting coroutine resumes without going through the event loop.
-#[pyclass(frozen)]
+/// What awaiting a finished future iterates: it yields once, so the event loop can run
+/// other tasks and deliver a cancellation as it does for `asyncio.sleep(0)`, then stops
+/// with the result, without creating an asyncio future or waking the loop from a worker.
+#[pyclass(module = "oxiserial.aio", frozen)]
 struct Ready {
     value: Py<PyAny>,
+    yielded: AtomicBool,
 }
 
 #[pymethods]
@@ -237,10 +239,36 @@ impl Ready {
     }
 
     fn __next__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        Err(PyStopIteration::new_err((self.value.clone_ref(py),)))
+        if self.yielded.swap(true, Ordering::Relaxed) {
+            Err(PyStopIteration::new_err((self.value.clone_ref(py),)))
+        } else {
+            Ok(py.None())
+        }
     }
+
+    fn send(&self, py: Python<'_>, _value: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        self.__next__(py)
+    }
+
+    #[pyo3(signature = (exception, _value = None, _traceback = None))]
+    fn throw(
+        &self,
+        exception: &Bound<'_, PyAny>,
+        _value: Option<&Bound<'_, PyAny>>,
+        _traceback: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        let exception = if exception.is_instance_of::<PyType>() {
+            exception.call0()?
+        } else {
+            exception.clone()
+        };
+        Err(PyErr::from_value(exception))
+    }
+
+    fn close(&self) {}
 }
 
+/// A port operation running on the runtime.
 #[pyclass(name = "Future", module = "oxiserial.aio", frozen)]
 pub struct OpFuture {
     shared: Arc<Shared>,
@@ -278,13 +306,23 @@ impl OpFuture {
         let mut op = Box::pin(op);
         let first = py.detach(|| {
             let _context = runtime.enter();
-            op.as_mut()
-                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                op.as_mut()
+                    .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+            }))
         });
         match first {
             // The task's first poll replaces the no-op waker registered here.
-            std::task::Poll::Pending => Self::spawn(op),
-            std::task::Poll::Ready(resolution) => Ok(Self::resolved(resolution)),
+            Ok(std::task::Poll::Pending) => Self::spawn(op),
+            Ok(std::task::Poll::Ready(resolution)) => Ok(Self::resolved(resolution)),
+            // Reported as a panic on a worker is; the drop guards run without the GIL.
+            Err(_) => {
+                py.detach(|| drop(op));
+                Ok(Self::resolved(Err(SerialError::Os {
+                    code: None,
+                    message: "the operation panicked".into(),
+                })))
+            }
         }
     }
 
@@ -343,12 +381,17 @@ impl OpFuture {
 
     fn __await__<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
         let py = slf.py();
+        // Checked first so awaiting outside a loop fails the same way finished or not.
+        let event_loop = py.import("asyncio")?.call_method0("get_running_loop")?;
         let finished = lock(&slf.get().shared.state).result.clone();
         if let Some(resolution) = finished {
             let value = to_python(py, &slf.get().shared, &resolution)?;
-            return Ok(Bound::new(py, Ready { value })?.into_any());
+            let ready = Ready {
+                value,
+                yielded: AtomicBool::new(false),
+            };
+            return Ok(Bound::new(py, ready)?.into_any());
         }
-        let event_loop = py.import("asyncio")?.call_method0("get_running_loop")?;
         let future = event_loop.call_method0("create_future")?;
         let shared = Arc::clone(&slf.get().shared);
         let finished = {

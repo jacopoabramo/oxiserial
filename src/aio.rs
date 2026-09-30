@@ -3,6 +3,7 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 
+use crate::errors::SerialError;
 use crate::future::{OpFuture, Outcome};
 use crate::port::PortCore;
 use crate::serial::{
@@ -29,6 +30,21 @@ pub fn serial_for_url<'py>(
         do_not_open,
         kwargs,
     )
+}
+
+/// Starts an operation that may issue a write.
+///
+/// On Windows the write goes out from a worker: the system cancels overlapped I/O when the
+/// thread that issued it exits, and the calling thread may exit before the write is sent.
+fn start_write<F>(py: Python<'_>, op: F) -> Result<OpFuture, SerialError>
+where
+    F: std::future::Future<Output = Result<Outcome, SerialError>> + Send + 'static,
+{
+    if cfg!(windows) {
+        OpFuture::spawn(op)
+    } else {
+        OpFuture::start(py, op)
+    }
 }
 
 /// Serial port whose I/O methods return futures.
@@ -126,14 +142,14 @@ impl AioSerial {
     }
 
     fn write(slf: &Bound<'_, Self>, data: &Bound<'_, PyAny>) -> PyResult<OpFuture> {
-        Ok(OpFuture::start(
+        Ok(start_write(
             slf.py(),
             ops::write(Self::core(slf), to_bytes(data)?),
         )?)
     }
 
     fn flush(slf: &Bound<'_, Self>) -> PyResult<OpFuture> {
-        Ok(OpFuture::start(slf.py(), ops::flush(Self::core(slf)))?)
+        Ok(start_write(slf.py(), ops::flush(Self::core(slf)))?)
     }
 
     #[pyo3(signature = (duration = 0.25))]

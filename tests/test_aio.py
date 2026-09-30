@@ -183,3 +183,25 @@ def test_immediate_failure_raises_on_await(run: Runner) -> None:
             await future
 
     run(main())
+
+
+@pytest.mark.timeout(10)
+def test_ready_awaits_let_other_tasks_run(run: Runner) -> None:
+    """Let a task awaiting only ready operations be cancelled by another task."""
+    port = serial_for_url("loop://", timeout=0)
+
+    async def spin() -> None:
+        while True:
+            await port.read(1)
+
+    async def main() -> None:
+        task = asyncio.create_task(spin())
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    try:
+        run(main())
+    finally:
+        port.close()
