@@ -10,8 +10,9 @@ use pyo3::types::{
 };
 
 use crate::errors::SerialError;
-use crate::future::{OpFuture, Outcome};
+use crate::future::{OpFuture, Outcome, WAIT_SLICE};
 use crate::port::PortCore;
+use crate::runtime::runtime;
 use crate::settings::{self, Parity, Seconds, Settings, StopBits};
 
 pub(crate) const LF: &[u8] = b"\n";
@@ -733,7 +734,27 @@ impl Serial {
     where
         F: Future<Output = Result<Outcome, SerialError>> + Send + 'static,
     {
-        OpFuture::spawn(op)?.block(py)
+        // On an oxiserial worker, such as one running a done-callback, this hands the worker's
+        // queued tasks to another thread before blocking; elsewhere it calls the closure directly.
+        tokio::task::block_in_place(|| Self::drive(py, op))
+    }
+
+    /// Runs `op` on this thread for one wait slice, where a ready result or a short wait
+    /// finishes, then hands it to a worker.
+    fn drive<F>(py: Python<'_>, op: F) -> PyResult<Py<PyAny>>
+    where
+        F: Future<Output = Result<Outcome, SerialError>> + Send + 'static,
+    {
+        let runtime = runtime()?;
+        let mut op = Box::pin(op);
+        let first = py
+            .detach(|| runtime.block_on(async { tokio::time::timeout(WAIT_SLICE, &mut op).await }));
+        match first {
+            Ok(result) => result.map_err(PyErr::from)?.to_py(py),
+            // On a worker the operation keeps going while a signal handler runs here, so the
+            // handler can use the port; kept on this thread, it would hold the port's turn.
+            Err(_) => OpFuture::spawn(op)?.block(py),
+        }
     }
 }
 

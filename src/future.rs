@@ -22,7 +22,7 @@ pub enum Outcome {
 }
 
 impl Outcome {
-    fn to_py(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    pub(crate) fn to_py(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         Ok(match self {
             Self::Unit => py.None(),
             Self::Int(n) => n.into_pyobject(py)?.into_any().unbind(),
@@ -36,6 +36,9 @@ impl Outcome {
 }
 
 type Resolution = Result<Outcome, SerialError>;
+
+/// How long a blocking wait sleeps between checks for Ctrl-C, which would otherwise not get through.
+pub(crate) const WAIT_SLICE: Duration = Duration::from_millis(50);
 
 struct Waiter {
     event_loop: Py<PyAny>,
@@ -265,8 +268,6 @@ impl OpFuture {
 impl OpFuture {
     #[pyo3(signature = (timeout = None))]
     fn wait(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Py<PyAny>> {
-        // Short slices let Ctrl-C through while the wait is otherwise unbounded.
-        const SLICE: Duration = Duration::from_millis(50);
         let deadline = timeout.and_then(|t| {
             let span = Duration::try_from_secs_f64(t.max(0.0)).ok()?;
             Instant::now().checked_add(span)
@@ -274,8 +275,8 @@ impl OpFuture {
         let shared = &*self.shared;
         loop {
             let finished = py.detach(|| {
-                let pause = deadline.map_or(SLICE, |d| {
-                    d.saturating_duration_since(Instant::now()).min(SLICE)
+                let pause = deadline.map_or(WAIT_SLICE, |d| {
+                    d.saturating_duration_since(Instant::now()).min(WAIT_SLICE)
                 });
                 let state = lock(&shared.state);
                 let (state, _) = shared

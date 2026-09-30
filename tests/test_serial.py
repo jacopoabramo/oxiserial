@@ -2,6 +2,7 @@ import _thread
 import array
 import errno
 import io
+import signal
 import sys
 import threading
 import time
@@ -11,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from conftest import Runner
 from oxiserial import (
     Baudrate,
     PortNotOpenError,
@@ -18,6 +20,7 @@ from oxiserial import (
     SerialException,
     SerialTimeoutException,
     _testing,
+    serial_for_url,
 )
 
 
@@ -405,3 +408,64 @@ def test_text_io_over_a_port(ports: tuple[Serial, Serial]) -> None:
     assert not b.closed
     text.close()
     assert b.closed
+
+
+def test_sync_call_inside_a_done_callback() -> None:
+    """Run a sync read from a done-callback that runs on an oxiserial worker thread."""
+    port = serial_for_url("loop://", timeout=1)
+    port.write(b"abc")
+    results: list[bytes] = []
+    errors: list[BaseException] = []
+    done = threading.Event()
+
+    threads: list[threading.Thread] = []
+
+    def callback(_: object) -> None:
+        threads.append(threading.current_thread())
+        try:
+            results.append(port.read(3))
+        except BaseException as err:
+            errors.append(err)
+        finally:
+            done.set()
+
+    _testing.delayed(b"", 0.05).add_done_callback(callback)
+    assert done.wait(5)
+    port.close()
+    assert errors == []
+    assert results == [b"abc"]
+    assert threads != [threading.main_thread()]
+
+
+def test_sync_call_inside_a_coroutine(run: Runner) -> None:
+    """Run a sync read inside a coroutine on each event loop."""
+    port = serial_for_url("loop://", timeout=1)
+
+    async def main() -> bytes:
+        port.write(b"xyz")
+        return port.read(3)
+
+    try:
+        assert run(main()) == b"xyz"
+    finally:
+        port.close()
+
+
+@pytest.mark.timeout(10)
+def test_signal_handler_can_use_the_port_during_a_blocked_read() -> None:
+    """Let a signal handler write and read on the port whose read it interrupted."""
+    port = serial_for_url("loop://", timeout=1)
+    seen: list[bytes] = []
+
+    def handler(signum: int, frame: object) -> None:
+        port.write(b"ack\n")
+        seen.append(port.readline())
+
+    previous = signal.signal(signal.SIGINT, handler)
+    try:
+        threading.Timer(0.1, _thread.interrupt_main, args=(signal.SIGINT,)).start()
+        outer = port.read(10)
+    finally:
+        signal.signal(signal.SIGINT, previous)
+        port.close()
+    assert b"".join([outer, *seen]) == b"ack\n"
