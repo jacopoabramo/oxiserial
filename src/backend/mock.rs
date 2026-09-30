@@ -126,6 +126,23 @@ pub fn update<R>(port: &str, f: impl FnOnce(&mut EndState) -> R) -> Option<R> {
     Some(result)
 }
 
+/// Makes `port` fail every read and write as an unplugged device does, waking any read or
+/// write waiting on it.
+pub fn unplug(port: &str) -> Option<()> {
+    let mock = lookup(port)?;
+    let mut state = lock(&mock.pair);
+    state.ends[mock.side].gone = true;
+    let wakers = [
+        state.read_waker[mock.side].take(),
+        state.ends[mock.side].write_waker.take(),
+    ];
+    drop(state);
+    for waker in wakers.into_iter().flatten() {
+        waker.wake();
+    }
+    Some(())
+}
+
 impl MockPort {
     fn peer(&self) -> usize {
         1 - self.side

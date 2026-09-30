@@ -5,7 +5,8 @@ import time
 import pytest
 
 from conftest import Runner
-from oxiserial import Serial
+from oxiserial import Serial, SerialException
+from oxiserial import aio as serial_asyncio
 from oxiserial.aio import Serial as AioSerial
 
 
@@ -187,3 +188,42 @@ def test_lines_under_flow_control_apply_when_it_is_turned_off(
         a.rtscts = False
         a.dsrdtr = False
         assert not b.cts and not b.dsr
+
+
+def test_serial_asyncio_round_trip(real_pair: tuple[str, str], run: Runner) -> None:
+    """Send a line between two ports opened with open_serial_connection."""
+
+    async def main() -> bytes:
+        _, writer = await serial_asyncio.open_serial_connection(url=real_pair[0])
+        reader, peer = await serial_asyncio.open_serial_connection(url=real_pair[1])
+        writer.write(b"ping\n")
+        await writer.drain()
+        line = await asyncio.wait_for(reader.readline(), 5)
+        for stream in (writer, peer):
+            stream.close()
+            await stream.wait_closed()
+        return line
+
+    assert run(main()) == b"ping\n"
+
+
+def test_serial_asyncio_releases_the_port_after_the_loop_closes(
+    real_pair: tuple[str, str],
+) -> None:
+    """Free the port once its loop has closed, even without transport.close()."""
+
+    async def main() -> None:
+        await serial_asyncio.create_serial_connection(
+            asyncio.get_running_loop(), asyncio.Protocol, real_pair[0]
+        )
+
+    asyncio.run(main())
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            Serial(real_pair[0]).close()
+            return
+        except SerialException:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.1)

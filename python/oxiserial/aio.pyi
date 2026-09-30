@@ -1,6 +1,7 @@
 """Serial port whose I/O methods return futures."""
 
-from collections.abc import Callable, Generator
+import asyncio
+from collections.abc import Callable, Coroutine, Generator, Iterable
 from contextvars import Context
 from types import GenericAlias
 from typing import Any, Generic, Self, TypeVar, final
@@ -9,7 +10,15 @@ from typing_extensions import Buffer
 
 from oxiserial import SerialBase
 
-__all__ = ["Future", "Serial", "serial_for_url"]
+__all__ = [
+    "Future",
+    "Serial",
+    "SerialTransport",
+    "connection_for_serial",
+    "create_serial_connection",
+    "open_serial_connection",
+    "serial_for_url",
+]
 
 _T_co = TypeVar("_T_co", covariant=True)
 
@@ -235,6 +244,115 @@ def serial_for_url(
     ------
     ValueError
         If `url` has a scheme other than `loop://`, or a setting is not valid.
+    SerialException
+        If the device cannot be opened.
+    """
+
+_P = TypeVar("_P", bound=asyncio.BaseProtocol)
+
+@final
+class SerialTransport(asyncio.Transport):
+    """An asyncio transport over a serial port, as in pyserial-asyncio.
+
+    Received bytes reach the protocol's `data_received` in order; `write`
+    queues bytes without blocking and calls the protocol's `pause_writing`
+    and `resume_writing` around the write-buffer limits.
+    """
+
+    @property
+    def loop(self) -> asyncio.AbstractEventLoop:
+        """The event loop the transport runs on."""
+    @property
+    def serial(self) -> SerialBase:
+        """The port, the same object as `get_extra_info("serial")`."""
+    def get_extra_info(self, name: str, default: Any = None) -> Any:
+        """Return the port for `"serial"`, and `default` for any other name."""
+    def is_closing(self) -> bool: ...
+    def is_reading(self) -> bool: ...
+    def close(self) -> None:
+        """Stop reading, send the queued bytes, then close the port.
+
+        The protocol's `connection_lost(None)` is called once the port is
+        closed.
+        """
+    def abort(self) -> None:
+        """Close at once, dropping the queued bytes."""
+    def write(self, data: Buffer | str) -> None:
+        """Queue `data` to be sent; ignored once the transport is closing."""
+    def writelines(self, list_of_data: Iterable[Buffer | str]) -> None: ...
+    def can_write_eof(self) -> bool:
+        """Return False: serial ports have no end-of-file."""
+    def write_eof(self) -> None:
+        """Raise, as serial ports have no end-of-file.
+
+        Raises
+        ------
+        NotImplementedError
+            Always.
+        """
+    def pause_reading(self) -> None: ...
+    def resume_reading(self) -> None: ...
+    def set_write_buffer_limits(
+        self, high: int | None = None, low: int | None = None
+    ) -> None:
+        """Set the write-buffer limits for `pause_writing` and `resume_writing`.
+
+        Raises
+        ------
+        ValueError
+            Unless `high >= low >= 0`.
+        """
+    def get_write_buffer_limits(self) -> tuple[int, int]: ...
+    def get_write_buffer_size(self) -> int:
+        """Return the bytes queued or being written."""
+    def flush(self) -> None:
+        """Discard the queued bytes, as pyserial-asyncio does."""
+    def get_protocol(self) -> asyncio.BaseProtocol: ...
+    def set_protocol(self, protocol: asyncio.BaseProtocol) -> None: ...
+
+def create_serial_connection(
+    loop: asyncio.AbstractEventLoop,
+    protocol_factory: Callable[[], _P],
+    url: str | None,
+    *args: Any,
+    **kwargs: Any,
+) -> Coroutine[Any, Any, tuple[SerialTransport, _P]]:
+    """Open `url` and connect it to a new protocol.
+
+    `url` and the other arguments go to
+    [`oxiserial.serial_for_url`][oxiserial.serial_for_url].
+
+    Raises
+    ------
+    ValueError
+        If `url` has an unknown scheme or a setting is not valid.
+    SerialException
+        If the device cannot be opened.
+    """
+
+def connection_for_serial(
+    loop: asyncio.AbstractEventLoop,
+    protocol_factory: Callable[[], _P],
+    serial_instance: SerialBase,
+) -> Coroutine[Any, Any, tuple[SerialTransport, _P]]:
+    """Connect an open port to a new protocol."""
+
+def open_serial_connection(
+    *,
+    loop: asyncio.AbstractEventLoop | None = None,
+    limit: int | None = None,
+    **kwargs: Any,
+) -> Coroutine[Any, Any, tuple[asyncio.StreamReader, asyncio.StreamWriter]]:
+    """Open a port and return a `StreamReader` and `StreamWriter` for it.
+
+    The keyword arguments go to
+    [`oxiserial.serial_for_url`][oxiserial.serial_for_url]; `limit` is the
+    reader's buffer limit.
+
+    Raises
+    ------
+    ValueError
+        If `url` has an unknown scheme or a setting is not valid.
     SerialException
         If the device cannot be opened.
     """

@@ -36,7 +36,7 @@ pub fn serial_for_url<'py>(
 ///
 /// On Windows the write goes out from a worker: the system cancels overlapped I/O when the
 /// thread that issued it exits, and the calling thread may exit before the write is sent.
-fn start_write<F>(py: Python<'_>, op: F) -> Result<OpFuture, SerialError>
+pub(crate) fn start_write<F>(py: Python<'_>, op: F) -> Result<OpFuture, SerialError>
 where
     F: std::future::Future<Output = Result<Outcome, SerialError>> + Send + 'static,
 {
