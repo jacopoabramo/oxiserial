@@ -55,11 +55,18 @@ fn panic_in_task() -> PyResult<OpFuture> {
     Ok(OpFuture::spawn(async { panic!("panic_in_task") })?)
 }
 
+/// Whether the extension was compiled without optimisations.
+#[pyfunction]
+fn debug_build() -> bool {
+    cfg!(debug_assertions)
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mock_pair, m)?)?;
     m.add_function(wrap_pyfunction!(mock_block_writes, m)?)?;
     m.add_function(wrap_pyfunction!(mock_state, m)?)?;
     m.add_function(wrap_pyfunction!(delayed, m)?)?;
     m.add_function(wrap_pyfunction!(panic_in_task, m)?)?;
+    m.add_function(wrap_pyfunction!(debug_build, m)?)?;
     Ok(())
 }

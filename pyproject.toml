@@ -36,9 +36,11 @@ exclude = [
 
 [tool.uv]
 package = false
+default-groups = ["dev", "bench"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 filterwarnings = [
     "error::pytest.PytestUnraisableExceptionWarning",
     "error::pytest.PytestUnhandledThreadExceptionWarning",
@@ -47,7 +49,7 @@ timeout = 60
 
 [tool.ruff]
 target-version = "py311"
-src = ["python", "tests"]
+src = ["python", "tests", "benchmarks"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "PYI", "PLC0415"]
@@ -58,9 +60,13 @@ select = ["E", "F", "W", "I", "UP", "B", "PYI", "PLC0415"]
 
 [tool.mypy]
 strict = true
-files = ["python", "tests"]
+files = ["python", "tests", "benchmarks"]
 
 [dependency-groups]
+bench = [
+    "pyserial==3.5",
+    "types-pyserial>=3.5.0.20260712",
+]
 dev = [
     "maturin>=1.15.0",
     "mypy>=2.3.1",
