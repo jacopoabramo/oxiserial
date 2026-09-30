@@ -34,9 +34,6 @@ jobs:
           base="$(uv run python -c 'import sys; print(sys.base_prefix)')"
           LD_LIBRARY_PATH="$base/lib" DYLD_LIBRARY_PATH="$base/lib" cargo test --features test-backend
       - run: uv run maturin develop --uv --features test-backend ${{ matrix.python == '3.14' && '--release' || '' }}
-      - name: Install socat (macOS)
-        if: runner.os == 'macOS'
-        run: brew install socat
       - name: Virtual port pair (Linux)
         if: runner.os == 'Linux'
         run: |
