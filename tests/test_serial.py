@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from conftest import Runner
 from oxiserial import (
     Baudrate,
     PortNotOpenError,
@@ -18,6 +19,7 @@ from oxiserial import (
     SerialException,
     SerialTimeoutException,
     _testing,
+    serial_for_url,
 )
 
 
@@ -405,3 +407,40 @@ def test_text_io_over_a_port(ports: tuple[Serial, Serial]) -> None:
     assert not b.closed
     text.close()
     assert b.closed
+
+
+def test_sync_call_inside_a_done_callback() -> None:
+    """Run a sync read from a done-callback that runs on an oxiserial worker thread."""
+    port = serial_for_url("loop://", timeout=1)
+    port.write(b"abc")
+    results: list[bytes] = []
+    errors: list[BaseException] = []
+    done = threading.Event()
+
+    def callback(_: object) -> None:
+        try:
+            results.append(port.read(3))
+        except BaseException as err:
+            errors.append(err)
+        finally:
+            done.set()
+
+    _testing.delayed(b"", 0.05).add_done_callback(callback)
+    assert done.wait(5)
+    port.close()
+    assert errors == []
+    assert results == [b"abc"]
+
+
+def test_sync_call_inside_a_coroutine(run: Runner) -> None:
+    """Run a sync read inside a coroutine on each event loop."""
+    port = serial_for_url("loop://", timeout=1)
+
+    async def main() -> bytes:
+        port.write(b"xyz")
+        return port.read(3)
+
+    try:
+        assert run(main()) == b"xyz"
+    finally:
+        port.close()

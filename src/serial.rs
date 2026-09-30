@@ -8,10 +8,12 @@ use pyo3::sync::PyOnceLock;
 use pyo3::types::{
     PyByteArray, PyBytes, PyDict, PyInt, PyMemoryView, PySlice, PyString, PyTuple, PyType,
 };
+use tokio::runtime::RuntimeFlavor;
 
 use crate::errors::SerialError;
-use crate::future::{OpFuture, Outcome};
+use crate::future::{OpFuture, Outcome, WAIT_SLICE};
 use crate::port::PortCore;
+use crate::runtime::runtime;
 use crate::settings::{self, Parity, Seconds, Settings, StopBits};
 
 pub(crate) const LF: &[u8] = b"\n";
@@ -733,7 +735,35 @@ impl Serial {
     where
         F: Future<Output = Result<Outcome, SerialError>> + Send + 'static,
     {
-        OpFuture::spawn(op)?.block(py)
+        match tokio::runtime::Handle::try_current() {
+            Err(_) => Self::drive(py, op),
+            // A worker, such as one running a done-callback, must hand its queued tasks to
+            // another thread before blocking, or an operation queued behind this call never runs.
+            Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(|| Self::drive(py, op))
+            }
+            // A current-thread runtime cannot hand over its tasks; the operation runs on
+            // oxiserial's own workers instead.
+            Ok(_) => OpFuture::spawn(op)?.block(py),
+        }
+    }
+
+    /// Runs `op` on this thread, checking for Ctrl-C between slices of the wait.
+    fn drive<F>(py: Python<'_>, op: F) -> PyResult<Py<PyAny>>
+    where
+        F: Future<Output = Result<Outcome, SerialError>> + Send,
+    {
+        let runtime = runtime()?;
+        let mut op = std::pin::pin!(op);
+        loop {
+            match py.detach(|| {
+                runtime.block_on(async { tokio::time::timeout(WAIT_SLICE, &mut op).await })
+            }) {
+                Ok(result) => return result.map_err(PyErr::from)?.to_py(py),
+                // Returning drops `op`, which cancels it as aborting its task would.
+                Err(_) => py.check_signals()?,
+            }
+        }
     }
 }
 
