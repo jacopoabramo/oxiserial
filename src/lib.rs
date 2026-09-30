@@ -14,7 +14,7 @@ mod transport;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict};
+use pyo3::types::{PyBytes, PyDict, PyList};
 
 /// Locks `mutex`, recovering the data if a panicking thread poisoned it.
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -86,7 +86,11 @@ fn _oxiserial(m: &Bound<'_, PyModule>) -> PyResult<()> {
     aio_module.add_class::<future::OpFuture>()?;
     aio_module.add_class::<aio::AioSerial>()?;
     aio_module.add_function(wrap_pyfunction!(aio::serial_for_url, &aio_module)?)?;
-    aio_module.add_class::<transport::SerialTransport>()?;
+    aio_module.add_function(wrap_pyfunction!(transport::__getattr__, &aio_module)?)?;
+    // SerialTransport is built on first access through __getattr__, yet is public API.
+    let aio_all = aio_module.getattr("__all__")?.cast_into::<PyList>()?;
+    aio_all.call_method1("remove", ("__getattr__",))?;
+    aio_all.append("SerialTransport")?;
     aio_module.add_function(wrap_pyfunction!(
         transport::create_serial_connection,
         &aio_module

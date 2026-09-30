@@ -1,10 +1,13 @@
 use std::ffi::CStr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use pyo3::exceptions::{PyNotImplementedError, PyRuntimeError, PyStopIteration, PyValueError};
+use pyo3::exceptions::{
+    PyAttributeError, PyNotImplementedError, PyRuntimeError, PyStopIteration, PyValueError,
+};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyCFunction, PyDict, PyTuple, PyType};
+use pyo3::sync::PyOnceLock;
+use pyo3::types::{PyBytes, PyCFunction, PyDict, PyTuple, PyType, PyWeakrefReference};
 
 use crate::aio::start_write;
 use crate::future::{OpFuture, Outcome};
@@ -102,24 +105,29 @@ struct State {
     drain: Option<Py<PyAny>>,
 }
 
-/// An asyncio transport over a serial port, with pyserial-asyncio's behaviour.
-#[pyclass(module = "oxiserial.aio", frozen)]
-pub struct SerialTransport {
+/// The state and behaviour behind `oxiserial.aio.TransportCore`, which forwards to it.
+///
+/// PyO3 classes cannot also derive from a Python class such as `asyncio.Transport`, so the
+/// public class is a Python subclass of it built by [`serial_transport_class`].
+#[pyclass(name = "_TransportCore", module = "oxiserial.aio", frozen)]
+pub struct TransportCore {
     event_loop: Py<PyAny>,
     serial: Py<SerialBase>,
     core: Arc<PortCore>,
     state: Mutex<State>,
+    /// A weak reference to the public transport, which holds this core.
+    public: OnceLock<Py<PyWeakrefReference>>,
 }
 
-type Handler = fn(&Bound<'_, SerialTransport>, &Bound<'_, PyAny>) -> PyResult<()>;
+type Handler = fn(&Bound<'_, TransportCore>, &Bound<'_, PyAny>) -> PyResult<()>;
 
-impl SerialTransport {
+impl TransportCore {
     fn create<'py>(
         py: Python<'py>,
         event_loop: &Bound<'py, PyAny>,
         protocol: &Bound<'py, PyAny>,
         serial: &Bound<'py, PyAny>,
-    ) -> PyResult<Bound<'py, Self>> {
+    ) -> PyResult<Bound<'py, PyAny>> {
         let serial = serial.cast::<SerialBase>()?.clone();
         // Matches pyserial-asyncio (BSD-3-Clause, see LICENSES/pyserial-asyncio.txt).
         serial.setattr("timeout", 0)?;
@@ -138,17 +146,31 @@ impl SerialTransport {
                 serial: serial.unbind(),
                 core,
                 state: Mutex::new(state),
+                public: OnceLock::new(),
             },
         )?;
-        event_loop.call_method1(
-            "call_soon",
-            (protocol.getattr("connection_made")?, &transport),
-        )?;
+        let class = serial_transport_class(py)?;
+        let public = class.call_method1("__new__", (class,))?;
+        public.setattr("_core", &transport)?;
+        // Set once, just above, before any other code can see the core.
+        let _ = transport
+            .get()
+            .public
+            .set(PyWeakrefReference::new(&public)?.unbind());
+        event_loop.call_method1("call_soon", (protocol.getattr("connection_made")?, &public))?;
         event_loop.call_method1(
             "call_soon",
             (Self::callback(&transport, c"on_start", Self::on_start)?,),
         )?;
-        Ok(transport)
+        Ok(public)
+    }
+
+    /// The public transport, or `None` once nothing holds it any more.
+    fn public(&self, py: Python<'_>) -> Py<PyAny> {
+        self.public
+            .get()
+            .and_then(|public| public.bind(py).upgrade())
+            .map_or_else(|| py.None(), Bound::unbind)
     }
 
     /// A Python callable that runs `handler` with this transport and the callable's first
@@ -370,7 +392,7 @@ impl SerialTransport {
         let context = PyDict::new(py);
         context.set_item("message", message)?;
         context.set_item("exception", exception)?;
-        context.set_item("transport", slf)?;
+        context.set_item("transport", slf.get().public(py))?;
         let protocol = lock(&slf.get().state)
             .protocol
             .as_ref()
@@ -504,7 +526,7 @@ impl SerialTransport {
 }
 
 #[pymethods]
-impl SerialTransport {
+impl TransportCore {
     #[getter(r#loop)]
     fn event_loop(&self, py: Python<'_>) -> Py<PyAny> {
         self.event_loop.clone_ref(py)
@@ -676,6 +698,99 @@ impl SerialTransport {
     }
 }
 
+/// Methods of `SerialTransport` that forward to its [`TransportCore`].
+const FORWARDED: [&str; 18] = [
+    "get_extra_info",
+    "is_closing",
+    "is_reading",
+    "close",
+    "abort",
+    "write",
+    "writelines",
+    "can_write_eof",
+    "write_eof",
+    "pause_reading",
+    "resume_reading",
+    "set_write_buffer_limits",
+    "get_write_buffer_limits",
+    "get_write_buffer_size",
+    "flush",
+    "get_protocol",
+    "set_protocol",
+    "__repr__",
+];
+
+/// A function that calls `name` on `self._core` with the remaining arguments.
+fn forwarder<'py>(py: Python<'py>, name: &'static str) -> PyResult<Bound<'py, PyCFunction>> {
+    PyCFunction::new_closure(py, None, None, move |args, kwargs| -> PyResult<Py<PyAny>> {
+        let rest = args.get_slice(1, args.len());
+        Ok(args
+            .get_item(0)?
+            .getattr("_core")?
+            .getattr(name)?
+            .call(rest, kwargs)?
+            .unbind())
+    })
+}
+
+/// A property getter that reads `name` from `self._core`.
+fn getter<'py>(py: Python<'py>, name: &'static str) -> PyResult<Bound<'py, PyCFunction>> {
+    PyCFunction::new_closure(
+        py,
+        None,
+        None,
+        move |args, _kwargs| -> PyResult<Py<PyAny>> {
+            Ok(args.get_item(0)?.getattr("_core")?.getattr(name)?.unbind())
+        },
+    )
+}
+
+/// `oxiserial.aio.SerialTransport`: an `asyncio.Transport` subclass whose methods forward to
+/// the [`TransportCore`] in its `_core` slot, built on first use so importing oxiserial does
+/// not import asyncio.
+pub fn serial_transport_class(py: Python<'_>) -> PyResult<&Bound<'_, PyType>> {
+    static CLASS: PyOnceLock<Py<PyType>> = PyOnceLock::new();
+    CLASS
+        .get_or_try_init(py, || {
+            let partialmethod = py.import("functools")?.getattr("partialmethod")?;
+            let property = py.import("builtins")?.getattr("property")?;
+            let namespace = PyDict::new(py);
+            namespace.set_item("__module__", "oxiserial.aio")?;
+            namespace.set_item("__qualname__", "SerialTransport")?;
+            namespace.set_item(
+                "__doc__",
+                "An asyncio transport over a serial port, as in pyserial-asyncio.",
+            )?;
+            namespace.set_item("__slots__", ("_core", "__weakref__"))?;
+            for name in FORWARDED {
+                namespace.set_item(name, partialmethod.call1((forwarder(py, name)?,))?)?;
+            }
+            for name in ["loop", "serial"] {
+                namespace.set_item(name, property.call1((getter(py, name)?,))?)?;
+            }
+            let base = py.import("asyncio")?.getattr("Transport")?;
+            let class = py.import("builtins")?.getattr("type")?.call1((
+                "SerialTransport",
+                (base,),
+                namespace,
+            ))?;
+            Ok::<_, PyErr>(class.cast_into::<PyType>()?.unbind())
+        })
+        .map(|class| class.bind(py))
+}
+
+/// Gives `oxiserial.aio.SerialTransport` on first access.
+#[pyfunction]
+pub fn __getattr__(py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
+    if name == "SerialTransport" {
+        Ok(serial_transport_class(py)?.clone().into_any().unbind())
+    } else {
+        Err(PyAttributeError::new_err(format!(
+            "module 'oxiserial.aio' has no attribute '{name}'"
+        )))
+    }
+}
+
 fn connect(
     py: Python<'_>,
     event_loop: &Bound<'_, PyAny>,
@@ -683,7 +798,7 @@ fn connect(
     serial: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
     let protocol = protocol_factory.call0()?;
-    let transport = SerialTransport::create(py, event_loop, &protocol, serial)?;
+    let transport = TransportCore::create(py, event_loop, &protocol, serial)?;
     Ok(PyTuple::new(py, [transport.into_any(), protocol])?
         .into_any()
         .unbind())
@@ -762,7 +877,7 @@ pub fn open_serial_connection(
             .import("oxiserial")?
             .getattr("serial_for_url")?
             .call((), kwargs.as_ref().map(|k| k.bind(py)))?;
-        let transport = SerialTransport::create(py, &event_loop, &protocol, &serial)?;
+        let transport = TransportCore::create(py, &event_loop, &protocol, &serial)?;
         let writer = asyncio.getattr("StreamWriter")?.call1((
             &transport,
             &protocol,

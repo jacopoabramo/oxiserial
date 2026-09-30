@@ -251,13 +251,12 @@ def serial_for_url(
 _P = TypeVar("_P", bound=asyncio.BaseProtocol)
 
 @final
-class SerialTransport:
+class SerialTransport(asyncio.Transport):
     """An asyncio transport over a serial port, as in pyserial-asyncio.
 
     Received bytes reach the protocol's `data_received` in order; `write`
     queues bytes without blocking and calls the protocol's `pause_writing`
-    and `resume_writing` around the write-buffer limits. It is not a subclass
-    of `asyncio.Transport`, but has its methods.
+    and `resume_writing` around the write-buffer limits.
     """
 
     @property
@@ -308,7 +307,7 @@ class SerialTransport:
         """Return the bytes queued or being written."""
     def flush(self) -> None:
         """Discard the queued bytes, as pyserial-asyncio does."""
-    def get_protocol(self) -> asyncio.BaseProtocol | None: ...
+    def get_protocol(self) -> asyncio.BaseProtocol: ...
     def set_protocol(self, protocol: asyncio.BaseProtocol) -> None: ...
 
 def create_serial_connection(

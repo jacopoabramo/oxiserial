@@ -270,3 +270,21 @@ def test_stream_reader_limit_keeps_every_byte_in_order(
         assert run(main()) == payload
     finally:
         peer.close()
+
+
+def test_transport_is_an_asyncio_transport(run: Runner) -> None:
+    """Hand the protocol and the caller an asyncio.Transport."""
+
+    async def main() -> None:
+        recorder = Recorder()
+        transport, _ = await serial_asyncio.create_serial_connection(
+            asyncio.get_running_loop(), lambda: recorder, "loop://"
+        )
+        await until(lambda: recorder.events)
+        assert isinstance(transport, asyncio.Transport)
+        assert recorder.events[0] == ("made", transport)
+        assert issubclass(serial_asyncio.SerialTransport, asyncio.Transport)
+        transport.close()
+        await recorder.closed()
+
+    run(main())
