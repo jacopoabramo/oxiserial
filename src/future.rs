@@ -1,8 +1,8 @@
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use pyo3::exceptions::PyTimeoutError;
 use pyo3::exceptions::asyncio::{CancelledError, InvalidStateError};
+use pyo3::exceptions::{PyStopIteration, PyTimeoutError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyCFunction, PyDict, PyGenericAlias, PyList, PyType};
 use tokio::task::AbortHandle;
@@ -223,6 +223,24 @@ impl Drop for CompleteOnDrop {
 }
 
 /// A port operation running on the runtime.
+/// What awaiting a finished future iterates: it stops at once with the result, so the
+/// awaiting coroutine resumes without going through the event loop.
+#[pyclass(frozen)]
+struct Ready {
+    value: Py<PyAny>,
+}
+
+#[pymethods]
+impl Ready {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        Err(PyStopIteration::new_err((self.value.clone_ref(py),)))
+    }
+}
+
 #[pyclass(name = "Future", module = "oxiserial.aio", frozen)]
 pub struct OpFuture {
     shared: Arc<Shared>,
@@ -248,9 +266,35 @@ impl OpFuture {
         Ok(Self { shared })
     }
 
+    /// Polls `op` once on this thread and hands it to a worker only if it is not finished.
+    ///
+    /// An operation whose result is ready (buffered data, a zero timeout, most writes) then
+    /// completes without a task, a worker wake-up or an event loop wake-up.
+    pub fn start<F>(py: Python<'_>, op: F) -> Result<Self, SerialError>
+    where
+        F: std::future::Future<Output = Resolution> + Send + 'static,
+    {
+        let runtime = runtime()?;
+        let mut op = Box::pin(op);
+        let first = py.detach(|| {
+            let _context = runtime.enter();
+            op.as_mut()
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+        });
+        match first {
+            // The task's first poll replaces the no-op waker registered here.
+            std::task::Poll::Pending => Self::spawn(op),
+            std::task::Poll::Ready(resolution) => Ok(Self::resolved(resolution)),
+        }
+    }
+
     pub fn ready(outcome: Outcome) -> Self {
+        Self::resolved(Ok(outcome))
+    }
+
+    fn resolved(resolution: Resolution) -> Self {
         let shared = Shared::default();
-        lock(&shared.state).result = Some(Ok(outcome));
+        lock(&shared.state).result = Some(resolution);
         Self {
             shared: Arc::new(shared),
         }
@@ -299,6 +343,11 @@ impl OpFuture {
 
     fn __await__<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
         let py = slf.py();
+        let finished = lock(&slf.get().shared.state).result.clone();
+        if let Some(resolution) = finished {
+            let value = to_python(py, &slf.get().shared, &resolution)?;
+            return Ok(Bound::new(py, Ready { value })?.into_any());
+        }
         let event_loop = py.import("asyncio")?.call_method0("get_running_loop")?;
         let future = event_loop.call_method0("create_future")?;
         let shared = Arc::clone(&slf.get().shared);

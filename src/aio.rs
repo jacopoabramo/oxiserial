@@ -94,7 +94,7 @@ impl AioSerial {
 
     #[pyo3(signature = (size = 1))]
     fn read(slf: &Bound<'_, Self>, size: usize) -> PyResult<OpFuture> {
-        Ok(OpFuture::spawn(ops::read(Self::core(slf), size))?)
+        Ok(OpFuture::start(slf.py(), ops::read(Self::core(slf), size))?)
     }
 
     #[pyo3(signature = (expected = None, size = None), text_signature = "(self, /, expected=b'\\n', size=None)")]
@@ -103,37 +103,45 @@ impl AioSerial {
         expected: Option<&Bound<'_, PyAny>>,
         size: Option<usize>,
     ) -> PyResult<OpFuture> {
-        Ok(OpFuture::spawn(ops::read_until(
-            Self::core(slf),
-            expected_bytes(expected)?,
-            size,
-        ))?)
+        Ok(OpFuture::start(
+            slf.py(),
+            ops::read_until(Self::core(slf), expected_bytes(expected)?, size),
+        )?)
     }
 
     #[pyo3(signature = (size = -1), text_signature = "(self, /, size=-1)")]
     fn readline(slf: &Bound<'_, Self>, size: isize) -> PyResult<OpFuture> {
-        Ok(OpFuture::spawn(ops::readline(Self::core(slf), size))?)
+        Ok(OpFuture::start(
+            slf.py(),
+            ops::readline(Self::core(slf), size),
+        )?)
     }
 
     #[pyo3(signature = (hint = -1), text_signature = "(self, /, hint=-1)")]
     fn readlines(slf: &Bound<'_, Self>, hint: isize) -> PyResult<OpFuture> {
-        Ok(OpFuture::spawn(ops::readlines(Self::core(slf), hint))?)
+        Ok(OpFuture::start(
+            slf.py(),
+            ops::readlines(Self::core(slf), hint),
+        )?)
     }
 
     fn write(slf: &Bound<'_, Self>, data: &Bound<'_, PyAny>) -> PyResult<OpFuture> {
-        Ok(OpFuture::spawn(ops::write(
-            Self::core(slf),
-            to_bytes(data)?,
-        ))?)
+        Ok(OpFuture::start(
+            slf.py(),
+            ops::write(Self::core(slf), to_bytes(data)?),
+        )?)
     }
 
     fn flush(slf: &Bound<'_, Self>) -> PyResult<OpFuture> {
-        Ok(OpFuture::spawn(ops::flush(Self::core(slf)))?)
+        Ok(OpFuture::start(slf.py(), ops::flush(Self::core(slf)))?)
     }
 
     #[pyo3(signature = (duration = 0.25))]
     fn send_break(slf: &Bound<'_, Self>, duration: f64) -> PyResult<OpFuture> {
-        Ok(OpFuture::spawn(ops::send_break(Self::core(slf), duration))?)
+        Ok(OpFuture::start(
+            slf.py(),
+            ops::send_break(Self::core(slf), duration),
+        )?)
     }
 
     fn read_all<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
