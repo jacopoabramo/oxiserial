@@ -352,6 +352,14 @@ impl Drop for SerialBase {
 
 #[pymethods]
 impl SerialBase {
+    fn cancel_read(&self) {
+        self.core.interrupt_read();
+    }
+
+    fn cancel_write(&self) {
+        self.core.interrupt_write();
+    }
+
     #[getter]
     fn port(&self) -> Option<String> {
         self.core.port()

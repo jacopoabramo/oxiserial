@@ -29,6 +29,9 @@ pub struct PortCore {
     read_turn: tokio::sync::Mutex<()>,
     write_turn: tokio::sync::Mutex<()>,
     closed: Notify,
+    // notify_one keeps a permit when nothing waits, so a cancel just before a read still ends it.
+    read_cancel: Notify,
+    write_cancel: Notify,
 }
 
 /// The end of a `send_break` waited for by a blocking OS sleep, which is precise where tokio's timer is not.
@@ -103,6 +106,8 @@ impl PortCore {
             read_turn: tokio::sync::Mutex::new(()),
             write_turn: tokio::sync::Mutex::new(()),
             closed: Notify::new(),
+            read_cancel: Notify::new(),
+            write_cancel: Notify::new(),
         }
     }
 
@@ -146,6 +151,16 @@ impl PortCore {
         opened.clear_buffers(true, false)?;
         *slot = Some(opened);
         Ok(())
+    }
+
+    // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): cancel_read and cancel_write
+    // end the call with what it has, and a cancel made while no call waits ends the next one.
+    pub fn interrupt_read(&self) {
+        self.read_cancel.notify_one();
+    }
+
+    pub fn interrupt_write(&self) {
+        self.write_cancel.notify_one();
     }
 
     pub fn close(&self) {
@@ -356,6 +371,9 @@ impl PortCore {
             };
             let deadline =
                 settings::duration(write_timeout).and_then(|t| Instant::now().checked_add(t));
+            // write_all sends everything, so only write can be cancelled.
+            let cancelled = self.write_cancel.notified();
+            tokio::pin!(cancelled);
             let mut written = 0;
             while written < data.len() {
                 let n = match deadline {
@@ -369,13 +387,17 @@ impl PortCore {
                             }
                         }
                     }
-                    None => poll_fn(|cx| self.poll_write_some(cx, &data[written..])).await?,
-                    Some(at) => {
-                        timeout_at(at, poll_fn(|cx| self.poll_write_some(cx, &data[written..])))
-                            .await
+                    None => tokio::select! {
+                        result = poll_fn(|cx| self.poll_write_some(cx, &data[written..])) => result?,
+                        () = &mut cancelled, if !ignore_timeout => return Ok(written),
+                    },
+                    Some(at) => tokio::select! {
+                        result = timeout_at(at, poll_fn(|cx| self.poll_write_some(cx, &data[written..]))) => {
                             // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): message.
-                            .map_err(|_| SerialError::Timeout("Write timeout".into()))??
-                    }
+                            result.map_err(|_| SerialError::Timeout("Write timeout".into()))??
+                        }
+                        () = &mut cancelled, if !ignore_timeout => return Ok(written),
+                    },
                 };
                 // An aborted write, for example by reset_output_buffer, ends the call with what was sent, as in pyserial.
                 if n == 0 {
@@ -544,17 +566,25 @@ impl PortCore {
         buf: &mut [u8],
         deadline: Option<Instant>,
     ) -> Result<Option<usize>, SerialError> {
+        let cancelled = self.read_cancel.notified();
+        tokio::pin!(cancelled);
         let n = match deadline {
-            None => poll_fn(|cx| self.poll_read_some(cx, buf)).await?,
+            None => tokio::select! {
+                result = poll_fn(|cx| self.poll_read_some(cx, buf)) => result?,
+                () = &mut cancelled => return Ok(None),
+            },
             Some(at) if at <= Instant::now() => {
                 match poll_once(|cx| self.poll_read_some(cx, buf)).await {
                     Some(result) => result?,
                     None => return Ok(None),
                 }
             }
-            Some(at) => match timeout_at(at, poll_fn(|cx| self.poll_read_some(cx, buf))).await {
-                Ok(result) => result?,
-                Err(_) => return Ok(None),
+            Some(at) => tokio::select! {
+                result = timeout_at(at, poll_fn(|cx| self.poll_read_some(cx, buf))) => match result {
+                    Ok(result) => result?,
+                    Err(_) => return Ok(None),
+                },
+                () = &mut cancelled => return Ok(None),
             },
         };
         if n == 0 {

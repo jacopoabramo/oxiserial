@@ -512,3 +512,38 @@ def test_unplugging_a_mock_port_ends_a_blocked_read(
         b.read(1)
     assert not isinstance(info.value, PortNotOpenError)
     assert not b.is_open
+
+
+def test_cancel_read_returns_what_arrived(ports: tuple[Serial, Serial]) -> None:
+    """Return the bytes read so far when another thread cancels a blocked read."""
+    a, b = ports
+    b.timeout = None
+    a.write(b"ab")
+    threading.Timer(0.1, b.cancel_read).start()
+    assert b.read(10) == b"ab"
+    assert b.is_open
+
+
+def test_cancel_read_before_a_read_ends_the_next_one(
+    ports: tuple[Serial, Serial],
+) -> None:
+    """End the next read at once when cancel_read came while no read was waiting."""
+    a, b = ports
+    b.timeout = None
+    b.cancel_read()
+    assert b.read(1) == b""
+    a.write(b"x")
+    assert b.read(1) == b"x"
+
+
+def test_cancel_write_returns_what_was_sent(
+    ports: tuple[Serial, Serial], mock_pair: tuple[str, str]
+) -> None:
+    """Return the bytes written so far when another thread cancels a blocked write."""
+    a, b = ports
+    _testing.mock_block_writes(mock_pair[0], True)
+    threading.Timer(0.1, a.cancel_write).start()
+    assert a.write(b"xyz") == 0
+    _testing.mock_block_writes(mock_pair[0], False)
+    assert a.write(b"ok") == 2
+    assert b.read(2) == b"ok"
