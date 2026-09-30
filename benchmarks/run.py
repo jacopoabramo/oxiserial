@@ -336,7 +336,11 @@ def l5(w: SyncPort, r: SyncPort, budget: float) -> list[float]:
 def stream(
     bench: str, w: SyncPort, r: SyncPort, budget: float, receive: Callable[[], bytes]
 ) -> list[float]:
-    """Time sending `PAYLOAD` from a writer thread while `receive` collects it."""
+    """Time sending `PAYLOAD` from a writer thread while `receive` collects it.
+
+    The timed part includes starting the writer thread, tens of microseconds
+    against samples of milliseconds.
+    """
 
     def step() -> None:
         errors: list[Exception] = []
@@ -349,8 +353,10 @@ def stream(
 
         writer = threading.Thread(target=write)
         writer.start()
-        got = receive()
-        writer.join()
+        try:
+            got = receive()
+        finally:
+            writer.join()
         if errors:
             raise errors[0]
         check(bench, PAYLOAD, got)
@@ -586,8 +592,14 @@ def cell(times: list[float], bench: Bench, baseline: list[float] | None) -> str:
         p95 = statistics.quantiles(times, n=20)[-1] if len(times) > 1 else times[0]
         text = f"{median * 1e6:.1f} us (p95 {p95 * 1e6:.1f})"
     if baseline:
-        text += f", {median / statistics.median(baseline):.2f}x"
+        text += f", {median / statistics.median(baseline):.3g}x"
     return text
+
+
+def failure_cell(err: Exception) -> str:
+    """Format a failed case so its message cannot break the Markdown row."""
+    text = f"FAILED: {type(err).__name__}: {err}"
+    return text.replace("|", "\\|").replace("\r", " ").replace("\n", " ")
 
 
 def run_port(spec: PortSpec, ids: set[str], budget: float) -> int:
@@ -608,7 +620,7 @@ def run_port(spec: PortSpec, ids: set[str], budget: float) -> int:
             outcome = results[library][i]
             if isinstance(outcome, Exception):
                 failures += 1
-                cells.append(f"FAILED: {type(outcome).__name__}: {outcome}")
+                cells.append(failure_cell(outcome))
             elif outcome:
                 cells.append(
                     cell(
@@ -627,6 +639,10 @@ def run_port(spec: PortSpec, ids: set[str], budget: float) -> int:
 
 def parse_ids(text: str) -> set[str]:
     ids = {item.strip() for item in text.split(",") if item.strip()}
+    if not ids:
+        raise argparse.ArgumentTypeError(
+            f"no ids given; valid ids: {', '.join(BENCH_IDS)}"
+        )
     unknown = ids - set(BENCH_IDS)
     if unknown:
         raise argparse.ArgumentTypeError(
@@ -644,6 +660,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--only", type=parse_ids, default=set(BENCH_IDS))
     parser.add_argument("--budget", type=float, default=1.0)
     args = parser.parse_args(argv)
+    if bool(args.port_a) != bool(args.port_b):
+        parser.error("--port-a and --port-b go together")
 
     print("## oxiserial benchmarks\n")
     print(

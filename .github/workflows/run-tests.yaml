@@ -135,11 +135,12 @@ jobs:
           "OXISERIAL_PORT_A=$env:PORT_A" >> $env:GITHUB_ENV
           "OXISERIAL_PORT_B=$env:PORT_B" >> $env:GITHUB_ENV
       - run: uv run pytest -v
-      - name: Benchmarks
-        if: matrix.python == '3.14'
-        shell: bash
-        run: uv run python benchmarks/run.py --budget 0.5 | tee -a "$GITHUB_STEP_SUMMARY"
       - run: uv run mypy
       - run: uv run python -m mypy.stubtest oxiserial
       - run: uv run ruff check python tests benchmarks
       - run: uv run ruff format --check python tests benchmarks
+      - name: Benchmarks
+        if: matrix.python == '3.14'
+        timeout-minutes: 15
+        shell: bash
+        run: uv run python -u benchmarks/run.py --budget 0.5 | tee -a "$GITHUB_STEP_SUMMARY"
