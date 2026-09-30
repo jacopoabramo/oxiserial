@@ -3,6 +3,7 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 
+use crate::errors::SerialError;
 use crate::future::{OpFuture, Outcome};
 use crate::port::PortCore;
 use crate::serial::{
@@ -29,6 +30,21 @@ pub fn serial_for_url<'py>(
         do_not_open,
         kwargs,
     )
+}
+
+/// Starts an operation that may issue a write.
+///
+/// On Windows the write goes out from a worker: the system cancels overlapped I/O when the
+/// thread that issued it exits, and the calling thread may exit before the write is sent.
+fn start_write<F>(py: Python<'_>, op: F) -> Result<OpFuture, SerialError>
+where
+    F: std::future::Future<Output = Result<Outcome, SerialError>> + Send + 'static,
+{
+    if cfg!(windows) {
+        OpFuture::spawn(op)
+    } else {
+        OpFuture::start(py, op)
+    }
 }
 
 /// Serial port whose I/O methods return futures.
@@ -94,7 +110,7 @@ impl AioSerial {
 
     #[pyo3(signature = (size = 1))]
     fn read(slf: &Bound<'_, Self>, size: usize) -> PyResult<OpFuture> {
-        Ok(OpFuture::spawn(ops::read(Self::core(slf), size))?)
+        Ok(OpFuture::start(slf.py(), ops::read(Self::core(slf), size))?)
     }
 
     #[pyo3(signature = (expected = None, size = None), text_signature = "(self, /, expected=b'\\n', size=None)")]
@@ -103,37 +119,45 @@ impl AioSerial {
         expected: Option<&Bound<'_, PyAny>>,
         size: Option<usize>,
     ) -> PyResult<OpFuture> {
-        Ok(OpFuture::spawn(ops::read_until(
-            Self::core(slf),
-            expected_bytes(expected)?,
-            size,
-        ))?)
+        Ok(OpFuture::start(
+            slf.py(),
+            ops::read_until(Self::core(slf), expected_bytes(expected)?, size),
+        )?)
     }
 
     #[pyo3(signature = (size = -1), text_signature = "(self, /, size=-1)")]
     fn readline(slf: &Bound<'_, Self>, size: isize) -> PyResult<OpFuture> {
-        Ok(OpFuture::spawn(ops::readline(Self::core(slf), size))?)
+        Ok(OpFuture::start(
+            slf.py(),
+            ops::readline(Self::core(slf), size),
+        )?)
     }
 
     #[pyo3(signature = (hint = -1), text_signature = "(self, /, hint=-1)")]
     fn readlines(slf: &Bound<'_, Self>, hint: isize) -> PyResult<OpFuture> {
-        Ok(OpFuture::spawn(ops::readlines(Self::core(slf), hint))?)
+        Ok(OpFuture::start(
+            slf.py(),
+            ops::readlines(Self::core(slf), hint),
+        )?)
     }
 
     fn write(slf: &Bound<'_, Self>, data: &Bound<'_, PyAny>) -> PyResult<OpFuture> {
-        Ok(OpFuture::spawn(ops::write(
-            Self::core(slf),
-            to_bytes(data)?,
-        ))?)
+        Ok(start_write(
+            slf.py(),
+            ops::write(Self::core(slf), to_bytes(data)?),
+        )?)
     }
 
     fn flush(slf: &Bound<'_, Self>) -> PyResult<OpFuture> {
-        Ok(OpFuture::spawn(ops::flush(Self::core(slf)))?)
+        Ok(start_write(slf.py(), ops::flush(Self::core(slf)))?)
     }
 
     #[pyo3(signature = (duration = 0.25))]
     fn send_break(slf: &Bound<'_, Self>, duration: f64) -> PyResult<OpFuture> {
-        Ok(OpFuture::spawn(ops::send_break(Self::core(slf), duration))?)
+        Ok(OpFuture::start(
+            slf.py(),
+            ops::send_break(Self::core(slf), duration),
+        )?)
     }
 
     fn read_all<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {

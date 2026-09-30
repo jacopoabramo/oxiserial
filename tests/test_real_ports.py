@@ -120,6 +120,28 @@ def test_a_non_blocking_write_held_by_flow_control_is_sent_later(
             assert b.read(100) == b"x" * 100
 
 
+def test_an_async_write_outlives_the_thread_that_started_it(
+    modem_pair: tuple[str, str],
+) -> None:
+    """Send an async write held by flow control after its starting thread exits."""
+    with Serial(modem_pair[1], timeout=2) as b:
+        b.rts = False
+        a = AioSerial(modem_pair[0], rtscts=True)
+        try:
+            futures = []
+            starter = threading.Thread(
+                target=lambda: futures.append(a.write(b"x" * 100))
+            )
+            starter.start()
+            starter.join()
+            time.sleep(0.2)
+            b.rts = True
+            assert futures[0].wait(5) == 100
+            assert b.read(100) == b"x" * 100
+        finally:
+            a.close()
+
+
 def test_reconfiguring_keeps_lowered_lines_low(modem_pair: tuple[str, str]) -> None:
     """Keep lowered RTS and DTR low through repeated baud rate and timeout changes."""
     a = Serial()

@@ -1,8 +1,9 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use pyo3::exceptions::PyTimeoutError;
 use pyo3::exceptions::asyncio::{CancelledError, InvalidStateError};
+use pyo3::exceptions::{PyStopIteration, PyTimeoutError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyCFunction, PyDict, PyGenericAlias, PyList, PyType};
 use tokio::task::AbortHandle;
@@ -222,6 +223,51 @@ impl Drop for CompleteOnDrop {
     }
 }
 
+/// What awaiting a finished future iterates: it yields once, so the event loop can run
+/// other tasks and deliver a cancellation as it does for `asyncio.sleep(0)`, then stops
+/// with the result, without creating an asyncio future or waking the loop from a worker.
+#[pyclass(module = "oxiserial.aio", frozen)]
+struct Ready {
+    value: Py<PyAny>,
+    yielded: AtomicBool,
+}
+
+#[pymethods]
+impl Ready {
+    fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __next__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        if self.yielded.swap(true, Ordering::Relaxed) {
+            Err(PyStopIteration::new_err((self.value.clone_ref(py),)))
+        } else {
+            Ok(py.None())
+        }
+    }
+
+    fn send(&self, py: Python<'_>, _value: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        self.__next__(py)
+    }
+
+    #[pyo3(signature = (exception, _value = None, _traceback = None))]
+    fn throw(
+        &self,
+        exception: &Bound<'_, PyAny>,
+        _value: Option<&Bound<'_, PyAny>>,
+        _traceback: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        let exception = if exception.is_instance_of::<PyType>() {
+            exception.call0()?
+        } else {
+            exception.clone()
+        };
+        Err(PyErr::from_value(exception))
+    }
+
+    fn close(&self) {}
+}
+
 /// A port operation running on the runtime.
 #[pyclass(name = "Future", module = "oxiserial.aio", frozen)]
 pub struct OpFuture {
@@ -248,9 +294,45 @@ impl OpFuture {
         Ok(Self { shared })
     }
 
+    /// Polls `op` once on this thread and hands it to a worker only if it is not finished.
+    ///
+    /// An operation whose result is ready (buffered data, a zero timeout, most writes) then
+    /// completes without a task, a worker wake-up or an event loop wake-up.
+    pub fn start<F>(py: Python<'_>, op: F) -> Result<Self, SerialError>
+    where
+        F: std::future::Future<Output = Resolution> + Send + 'static,
+    {
+        let runtime = runtime()?;
+        let mut op = Box::pin(op);
+        let first = py.detach(|| {
+            let _context = runtime.enter();
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                op.as_mut()
+                    .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+            }))
+        });
+        match first {
+            // The task's first poll replaces the no-op waker registered here.
+            Ok(std::task::Poll::Pending) => Self::spawn(op),
+            Ok(std::task::Poll::Ready(resolution)) => Ok(Self::resolved(resolution)),
+            // Reported as a panic on a worker is; the drop guards run without the GIL.
+            Err(_) => {
+                py.detach(|| drop(op));
+                Ok(Self::resolved(Err(SerialError::Os {
+                    code: None,
+                    message: "the operation panicked".into(),
+                })))
+            }
+        }
+    }
+
     pub fn ready(outcome: Outcome) -> Self {
+        Self::resolved(Ok(outcome))
+    }
+
+    fn resolved(resolution: Resolution) -> Self {
         let shared = Shared::default();
-        lock(&shared.state).result = Some(Ok(outcome));
+        lock(&shared.state).result = Some(resolution);
         Self {
             shared: Arc::new(shared),
         }
@@ -299,7 +381,17 @@ impl OpFuture {
 
     fn __await__<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
         let py = slf.py();
+        // Checked first so awaiting outside a loop fails the same way finished or not.
         let event_loop = py.import("asyncio")?.call_method0("get_running_loop")?;
+        let finished = lock(&slf.get().shared.state).result.clone();
+        if let Some(resolution) = finished {
+            let value = to_python(py, &slf.get().shared, &resolution)?;
+            let ready = Ready {
+                value,
+                yielded: AtomicBool::new(false),
+            };
+            return Ok(Bound::new(py, ready)?.into_any());
+        }
         let future = event_loop.call_method0("create_future")?;
         let shared = Arc::clone(&slf.get().shared);
         let finished = {

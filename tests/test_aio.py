@@ -5,7 +5,7 @@ import pytest
 
 from conftest import Runner
 from oxiserial import PortNotOpenError
-from oxiserial.aio import Serial
+from oxiserial.aio import Serial, serial_for_url
 
 
 def test_async_read_and_write(mock_pair: tuple[str, str], run: Runner) -> None:
@@ -149,3 +149,59 @@ def test_dropping_a_port_ends_its_pending_read(mock_pair: tuple[str, str]) -> No
     del port
     with pytest.raises(PortNotOpenError):
         pending.wait(timeout=2)
+
+
+def test_ready_operation_completes_at_call(run: Runner) -> None:
+    """Complete an operation whose result is ready when it is called."""
+    port = serial_for_url("loop://", timeout=1)
+
+    async def main() -> list[object]:
+        await port.write(b"abc")
+        future = port.read(3)
+        assert future.done()
+        called: list[object] = []
+        future.add_done_callback(called.append)
+        assert await future == b"abc"
+        await asyncio.sleep(0)
+        return called
+
+    try:
+        assert len(run(main())) == 1
+    finally:
+        port.close()
+
+
+def test_immediate_failure_raises_on_await(run: Runner) -> None:
+    """Raise the error of an operation that fails at once when it is awaited."""
+    port = serial_for_url("loop://", timeout=1)
+    port.close()
+
+    async def main() -> None:
+        future = port.read(1)
+        assert future.done()
+        with pytest.raises(PortNotOpenError):
+            await future
+
+    run(main())
+
+
+@pytest.mark.timeout(10)
+def test_ready_awaits_let_other_tasks_run(run: Runner) -> None:
+    """Let a task awaiting only ready operations be cancelled by another task."""
+    port = serial_for_url("loop://", timeout=0)
+
+    async def spin() -> None:
+        while True:
+            await port.read(1)
+
+    async def main() -> None:
+        task = asyncio.create_task(spin())
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    try:
+        run(main())
+    finally:
+        port.close()
