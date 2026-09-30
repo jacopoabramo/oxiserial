@@ -9,6 +9,7 @@ mod serial;
 mod settings;
 #[cfg(feature = "test-backend")]
 mod testing;
+mod transport;
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -85,6 +86,19 @@ fn _oxiserial(m: &Bound<'_, PyModule>) -> PyResult<()> {
     aio_module.add_class::<future::OpFuture>()?;
     aio_module.add_class::<aio::AioSerial>()?;
     aio_module.add_function(wrap_pyfunction!(aio::serial_for_url, &aio_module)?)?;
+    aio_module.add_class::<transport::SerialTransport>()?;
+    aio_module.add_function(wrap_pyfunction!(
+        transport::create_serial_connection,
+        &aio_module
+    )?)?;
+    aio_module.add_function(wrap_pyfunction!(
+        transport::connection_for_serial,
+        &aio_module
+    )?)?;
+    aio_module.add_function(wrap_pyfunction!(
+        transport::open_serial_connection,
+        &aio_module
+    )?)?;
     add_submodule(m, "aio", &aio_module)?;
 
     let tools_module = PyModule::new(py, "oxiserial.tools")?;

@@ -18,6 +18,11 @@ fn mock_pair() -> (String, String) {
 }
 
 #[pyfunction]
+fn mock_unplug(port: &str) -> PyResult<()> {
+    mock::unplug(port).ok_or_else(|| unknown(port))
+}
+
+#[pyfunction]
 fn mock_block_writes(port: &str, blocked: bool) -> PyResult<()> {
     mock::update(port, |end| end.write_blocked = blocked).ok_or_else(|| unknown(port))
 }
@@ -64,6 +69,7 @@ fn debug_build() -> bool {
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mock_pair, m)?)?;
     m.add_function(wrap_pyfunction!(mock_block_writes, m)?)?;
+    m.add_function(wrap_pyfunction!(mock_unplug, m)?)?;
     m.add_function(wrap_pyfunction!(mock_state, m)?)?;
     m.add_function(wrap_pyfunction!(delayed, m)?)?;
     m.add_function(wrap_pyfunction!(panic_in_task, m)?)?;

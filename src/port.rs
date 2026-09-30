@@ -283,6 +283,19 @@ impl PortCore {
         self.until_closed(self.read_locked(size)).await
     }
 
+    /// Waits, with no timeout, until at least one byte is buffered and returns what is
+    /// there, up to `max`; `close` ends the wait.
+    pub async fn read_available(&self, max: usize) -> Result<Vec<u8>, SerialError> {
+        let _turn = self.read_turn.lock().await;
+        self.until_closed(async {
+            let mut buf = vec![0u8; max.max(1)];
+            let n = self.read_chunk(&mut buf, None).await?.unwrap_or(0);
+            buf.truncate(n);
+            Ok(buf)
+        })
+        .await
+    }
+
     pub async fn read_until(
         &self,
         expected: &[u8],
@@ -323,11 +336,24 @@ impl PortCore {
     }
 
     pub async fn write(&self, data: &[u8]) -> Result<usize, SerialError> {
+        self.write_with(data, false).await
+    }
+
+    /// Writes every byte, waiting as long as it takes; `close` still ends it.
+    pub async fn write_all(&self, data: &[u8]) -> Result<usize, SerialError> {
+        self.write_with(data, true).await
+    }
+
+    async fn write_with(&self, data: &[u8], ignore_timeout: bool) -> Result<usize, SerialError> {
         let _turn = self.write_turn.lock().await;
         // Declared after `_turn`, so it cancels a leftover write before the next writer starts.
         let _cancel = CancelWrite(self);
         self.until_closed(async {
-            let write_timeout = self.settings().write_timeout;
+            let write_timeout = if ignore_timeout {
+                None
+            } else {
+                self.settings().write_timeout
+            };
             let deadline =
                 settings::duration(write_timeout).and_then(|t| Instant::now().checked_add(t));
             let mut written = 0;
@@ -788,6 +814,34 @@ mod tests {
         let (a, _b, a_name) = open_pair(|s| s.write_timeout = Some(0.0.into()))?;
         mock::update(&a_name, |end| end.write_blocked = true);
         assert_eq!(a.write(b"xy").await, Ok(0));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn read_available_waits_for_data_and_returns_what_is_buffered() -> Result<(), SerialError>
+    {
+        let (a, b, _) = open_pair(|_| {})?;
+        let (read, wrote) = tokio::join!(b.read_available(64), async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            a.write(b"abc").await
+        });
+        wrote?;
+        assert_eq!(read?, b"abc");
+        a.write(b"defgh").await?;
+        assert_eq!(b.read_available(3).await?, b"def");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn write_all_ignores_a_zero_write_timeout() -> Result<(), SerialError> {
+        let (a, b, a_name) = open_pair(|s| s.write_timeout = Some(0.0.into()))?;
+        mock::update(&a_name, |end| end.write_blocked = true);
+        let (written, ()) = tokio::join!(a.write_all(b"abc"), async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            mock::update(&a_name, |end| end.write_blocked = false);
+        });
+        assert_eq!(written?, 3);
+        assert_eq!(b.read(3).await?, b"abc");
         Ok(())
     }
 

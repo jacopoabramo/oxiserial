@@ -499,3 +499,16 @@ def test_signal_handler_can_use_the_port_during_a_blocked_read() -> None:
         signal.signal(signal.SIGINT, previous)
         port.close()
     assert b"".join([outer, *seen]) == b"ack\n"
+
+
+def test_unplugging_a_mock_port_ends_a_blocked_read(
+    ports: tuple[Serial, Serial], mock_pair: tuple[str, str]
+) -> None:
+    """End a blocked read with SerialException when the mock port is unplugged."""
+    _, b = ports
+    b.timeout = None
+    threading.Timer(0.1, _testing.mock_unplug, args=(mock_pair[1],)).start()
+    with pytest.raises(SerialException) as info:
+        b.read(1)
+    assert not isinstance(info.value, PortNotOpenError)
+    assert not b.is_open

@@ -5,6 +5,7 @@ from oxiserial.aio import Future
 __all__ = [
     "mock_pair",
     "mock_block_writes",
+    "mock_unplug",
     "mock_state",
     "delayed",
     "panic_in_task",
@@ -19,6 +20,15 @@ def mock_pair() -> tuple[str, str]:
 
 def mock_block_writes(port: str, blocked: bool) -> None:
     """Make writes to the mock port `port` accept no bytes while `blocked` is true.
+
+    Raises
+    ------
+    ValueError
+        If `port` is not a mock port.
+    """
+
+def mock_unplug(port: str) -> None:
+    """Make the mock port `port` fail reads and writes as an unplugged device does.
 
     Raises
     ------
