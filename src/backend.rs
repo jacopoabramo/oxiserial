@@ -49,6 +49,13 @@ pub trait Backend: AsyncRead + AsyncWrite + Unpin + Send + 'static {
     fn detach_write(&mut self) -> usize {
         0
     }
+
+    /// Sets the driver's input and output queue sizes; backends without driver queues keep
+    /// nothing to size.
+    #[cfg(windows)]
+    fn set_buffer_size(&mut self, _rx: u32, _tx: u32) -> Result<(), SerialError> {
+        Ok(())
+    }
 }
 
 /// Opens `port` and applies `settings` and the RTS and DTR levels.

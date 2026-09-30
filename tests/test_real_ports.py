@@ -1,4 +1,5 @@
 import asyncio
+import sys
 import threading
 import time
 
@@ -227,3 +228,15 @@ def test_serial_asyncio_releases_the_port_after_the_loop_closes(
             if time.monotonic() > deadline:
                 raise
             time.sleep(0.1)
+
+
+def test_set_buffer_size_keeps_data_flowing(real_pair: tuple[str, str]) -> None:
+    """Size the driver queues and still pass data through the port."""
+    if sys.platform != "win32":
+        pytest.skip("set_buffer_size is Windows-only, as in pyserial")
+    with Serial(real_pair[0], timeout=2) as a, Serial(real_pair[1], timeout=2) as b:
+        b.set_buffer_size(rx_size=65536)
+        a.set_buffer_size(4096, 8192)
+        payload = bytes(range(256)) * 64
+        a.write(payload)
+        assert b.read(len(payload)) == payload

@@ -490,22 +490,40 @@ BENCHES = (
 BENCH_IDS = tuple(dict.fromkeys(bench.id for bench in BENCHES))
 
 
+# Driver queue size from --rx-size; None leaves each port's default.
+RX_SIZE: int | None = None
+
+T = TypeVar("T")
+
+
+def sized(port: T) -> T:
+    """Apply --rx-size to a newly opened port that has `set_buffer_size` (Windows)."""
+    set_buffer_size = getattr(port, "set_buffer_size", None)
+    if RX_SIZE is not None and set_buffer_size is not None:
+        set_buffer_size(RX_SIZE)
+    return port
+
+
 def open_pyserial(name: str) -> SyncPort:
     port: SyncPort = serial.serial_for_url(
         name, baudrate=BAUDRATE, timeout=READ_TIMEOUT, write_timeout=WRITE_TIMEOUT
     )
-    return port
+    return sized(port)
 
 
 def open_oxiserial(name: str) -> SyncPort:
-    return oxiserial.serial_for_url(
-        name, baudrate=BAUDRATE, timeout=READ_TIMEOUT, write_timeout=WRITE_TIMEOUT
+    return sized(
+        oxiserial.serial_for_url(
+            name, baudrate=BAUDRATE, timeout=READ_TIMEOUT, write_timeout=WRITE_TIMEOUT
+        )
     )
 
 
 def open_aio(name: str) -> AioSerial:
-    return oxiserial.aio.serial_for_url(
-        name, baudrate=BAUDRATE, timeout=READ_TIMEOUT, write_timeout=WRITE_TIMEOUT
+    return sized(
+        oxiserial.aio.serial_for_url(
+            name, baudrate=BAUDRATE, timeout=READ_TIMEOUT, write_timeout=WRITE_TIMEOUT
+        )
     )
 
 
@@ -674,7 +692,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port-b", default=os.environ.get("OXISERIAL_PORT_B"))
     parser.add_argument("--only", type=parse_ids, default=set(BENCH_IDS))
     parser.add_argument("--budget", type=float, default=1.0)
+    parser.add_argument(
+        "--rx-size",
+        type=int,
+        default=None,
+        help="driver queue size for every port that has set_buffer_size (Windows)",
+    )
     args = parser.parse_args(argv)
+    global RX_SIZE
+    RX_SIZE = args.rx_size
     if bool(args.port_a) != bool(args.port_b):
         parser.error("--port-a and --port-b go together")
 

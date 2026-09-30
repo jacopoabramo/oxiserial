@@ -1,5 +1,6 @@
 """Serial port access with a pyserial-compatible API."""
 
+import sys
 from collections.abc import Iterator, Mapping
 from enum import IntEnum
 from typing import Any, ClassVar, Final, Self
@@ -301,6 +302,22 @@ class SerialBase:
 
         A cancel made while no write is waiting ends the next write at once.
         """
+    if sys.platform == "win32":
+        def set_buffer_size(
+            self, rx_size: int = 4096, tx_size: int | None = None
+        ) -> None:
+            """Set the driver's input and output queue sizes, in bytes.
+
+            `tx_size` defaults to `rx_size`. Opening the port sets both to 4096
+            again. Windows only: other platforms have no such queues to size.
+
+            Raises
+            ------
+            PortNotOpenError
+                If the port is closed.
+            SerialException
+                If the driver rejects the sizes.
+            """
     def get_settings(self) -> dict[str, Any]:
         """Return the current settings as a dictionary that `apply_settings` accepts."""
     def apply_settings(self, d: Mapping[str, Any]) -> None:

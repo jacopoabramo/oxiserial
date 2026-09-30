@@ -171,6 +171,11 @@ impl Backend for Port {
     fn detach_write(&mut self) -> usize {
         Port::detach_write(self)
     }
+
+    #[cfg(windows)]
+    fn set_buffer_size(&mut self, rx: u32, tx: u32) -> Result<(), SerialError> {
+        Ok(self.setup_queues(rx, tx)?)
+    }
 }
 
 #[cfg(unix)]
