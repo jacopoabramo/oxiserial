@@ -192,6 +192,20 @@ def dashed(i: int) -> bytes:
     return f"{i:062x}--".encode()
 
 
+def l0(w: SyncPort, r: SyncPort, budget: float) -> None:
+    """Return nothing: a loop iteration only exists for the async libraries."""
+    return None
+
+
+async def l0_async(w: AioSerial, r: AioSerial, budget: float) -> list[float]:
+    """Time one event loop iteration with no port I/O, the floor for an awaited call."""
+
+    async def step() -> None:
+        await asyncio.sleep(0)
+
+    return await sample_async(step, budget)
+
+
 def l1(w: SyncPort, r: SyncPort, budget: float) -> list[float]:
     counter = itertools.count()
 
@@ -456,6 +470,7 @@ class Bench:
 
 
 BENCHES = (
+    Bench("L0", "await asyncio.sleep(0), no port I/O", False, l0, l0_async),
     Bench("L1", "write(8), read(8)", False, l1, l1_async),
     Bench("L2", "64-byte line, readline()", False, l2_readline, l2_readline_async),
     Bench(
