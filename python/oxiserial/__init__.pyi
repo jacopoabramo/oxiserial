@@ -291,6 +291,16 @@ class SerialBase:
         PortNotOpenError
             If the port is closed.
         """
+    def cancel_read(self) -> None:
+        """End a waiting read, which returns the bytes it has read so far.
+
+        A cancel made while no read is waiting ends the next read at once.
+        """
+    def cancel_write(self) -> None:
+        """End a waiting write, which returns the number of bytes sent so far.
+
+        A cancel made while no write is waiting ends the next write at once.
+        """
     def get_settings(self) -> dict[str, Any]:
         """Return the current settings as a dictionary that `apply_settings` accepts."""
     def apply_settings(self, d: Mapping[str, Any]) -> None:

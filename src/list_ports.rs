@@ -196,7 +196,26 @@ pub fn comports(py: Python<'_>, include_links: bool) -> PyResult<Vec<ListPortInf
     let ports = py
         .detach(serialport::available_ports)
         .map_err(SerialError::from)?;
-    Ok(ports.into_iter().map(ListPortInfo::from_info).collect())
+    Ok(ports
+        .into_iter()
+        .filter(|port| !has_no_uart(&port.port_name))
+        .map(ListPortInfo::from_info)
+        .collect())
+}
+
+/// Whether `device` is a legacy serial slot with no UART behind it: Linux lists every ttyS
+/// slot, and marks the empty ones with UART type 0 (`PORT_UNKNOWN`) in sysfs.
+#[cfg(target_os = "linux")]
+fn has_no_uart(device: &str) -> bool {
+    device.strip_prefix("/dev/").is_some_and(|name| {
+        std::fs::read_to_string(format!("/sys/class/tty/{name}/type"))
+            .is_ok_and(|uart_type| uart_type.trim() == "0")
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn has_no_uart(_device: &str) -> bool {
+    false
 }
 
 #[cfg(test)]

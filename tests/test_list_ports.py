@@ -1,3 +1,6 @@
+import os
+import sys
+
 import pytest
 
 from oxiserial.tools.list_ports import ListPortInfo, comports
@@ -59,3 +62,15 @@ def test_subclass_and_dynamic_attributes() -> None:
     port = ListPortInfo("COM1")
     port.custom = 1  # type: ignore[attr-defined]
     assert port.custom == 1  # type: ignore[attr-defined]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="reads Linux sysfs")
+def test_comports_leaves_out_ports_without_a_uart() -> None:
+    """Leave out ttyS ports whose sysfs UART type is 0, the unused legacy slots."""
+    for port in comports():
+        name = os.path.basename(port.device)
+        try:
+            with open(f"/sys/class/tty/{name}/type") as uart_type:
+                assert uart_type.read().strip() != "0", port.device
+        except FileNotFoundError:
+            continue
