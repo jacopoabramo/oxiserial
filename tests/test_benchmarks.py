@@ -1,7 +1,9 @@
+import threading
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
-from benchmarks.run import IntegrityError, check, main, pattern
+from benchmarks.run import IntegrityError, check, main, pattern, wait_for_ports
 
 
 def swap(data: bytes) -> bytes:
@@ -33,3 +35,11 @@ def test_only_rejects_unknown_ids(capsys: pytest.CaptureFixture[str]) -> None:
         main(["--only", "L9"])
     assert info.value.code == 2
     assert "L1" in capsys.readouterr().err
+
+
+def test_wait_for_ports_waits_for_the_path_to_appear(tmp_path: Path) -> None:
+    """Return only once an absolute port path exists, as a restarting socat link."""
+    link = tmp_path / "ttyA"
+    threading.Timer(0.2, link.touch).start()
+    wait_for_ports([str(link)], timeout=5)
+    assert link.exists()

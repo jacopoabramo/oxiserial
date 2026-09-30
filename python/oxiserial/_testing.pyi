@@ -2,7 +2,14 @@
 
 from oxiserial.aio import Future
 
-__all__ = ["mock_pair", "mock_block_writes", "mock_state", "delayed", "panic_in_task"]
+__all__ = [
+    "mock_pair",
+    "mock_block_writes",
+    "mock_state",
+    "delayed",
+    "panic_in_task",
+    "debug_build",
+]
 
 def mock_pair() -> tuple[str, str]:
     """Create two connected mock ports and return their names.
@@ -39,3 +46,6 @@ def delayed(value: bytes, delay: float) -> Future[bytes]:
 
 def panic_in_task() -> Future[bytes]:
     """Return a future whose task panics, so waiting on it raises `SerialException`."""
+
+def debug_build() -> bool:
+    """Return whether the extension was compiled without optimisations."""

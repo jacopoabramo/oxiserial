@@ -28,6 +28,8 @@ STREAM_SIZE = 1 << 20
 BAUDRATE = 921_600
 READ_TIMEOUT = 1.0
 WRITE_TIMEOUT = 30.0
+# Twice the time 1 MiB takes at BAUDRATE, for links that transfer at the baud rate.
+S3_TIMEOUT = 2 * 10 * STREAM_SIZE / BAUDRATE + READ_TIMEOUT
 
 
 class IntegrityError(Exception):
@@ -389,7 +391,7 @@ def s2(w: SyncPort, r: SyncPort, budget: float) -> list[float] | None:
 
 
 def s3(w: SyncPort, r: SyncPort, budget: float) -> list[float]:
-    r.timeout = 10 * READ_TIMEOUT
+    r.timeout = S3_TIMEOUT
     try:
         return stream("S3", w, r, budget, lambda: r.read(STREAM_SIZE))
     finally:
@@ -425,7 +427,7 @@ async def s1_async(w: AioSerial, r: AioSerial, budget: float) -> list[float]:
 
 
 async def s3_async(w: AioSerial, r: AioSerial, budget: float) -> list[float]:
-    r.timeout = 10 * READ_TIMEOUT
+    r.timeout = S3_TIMEOUT
 
     async def receive() -> bytes:
         return await r.read(STREAM_SIZE)
@@ -519,25 +521,60 @@ def open_ends(spec: PortSpec, opener: Callable[[str], P]) -> tuple[P, P]:
         raise
 
 
-def run_case(
-    spec: PortSpec, bench: Bench, library: str, budget: float
-) -> list[float] | None:
-    """Run one benchmark on one port for one library; `None` means it does not apply."""
-    if library in SYNC_LIBRARIES:
-        w, r = open_ends(spec, SYNC_LIBRARIES[library])
-        try:
-            return bench.sync(w, r, budget)
-        finally:
-            w.close()
-            r.close()
-    if bench.run_async is None:
-        return None
-    aw, ar = open_ends(spec, open_aio)
+def wait_for_ports(names: list[str], timeout: float = 5.0) -> None:
+    """Wait until every absolute port path exists, or `timeout` seconds pass.
+
+    A socat pty pair removes its links while it restarts after a close.
+    """
+    deadline = time.perf_counter() + timeout
+    while any(os.path.isabs(n) and not os.path.exists(n) for n in names):
+        if time.perf_counter() > deadline:
+            return
+        time.sleep(0.05)
+
+
+def run_library(
+    spec: PortSpec, benches: list[Bench], library: str, budget: float
+) -> list[Samples | Exception]:
+    """Run `benches` for one library on one pair of open ports.
+
+    Each entry is the samples, `None` where the benchmark does not apply, or
+    the exception the benchmark raised.
+    """
+    wait_for_ports([spec.a, spec.b])
+    results: list[Samples | Exception] = []
     try:
-        return ASYNC_LIBRARIES[library](bench.run_async(aw, ar, budget))
-    finally:
-        aw.close()
-        ar.close()
+        if library in SYNC_LIBRARIES:
+            w, r = open_ends(spec, SYNC_LIBRARIES[library])
+            try:
+                for bench in benches:
+                    try:
+                        results.append(bench.sync(w, r, budget))
+                    except Exception as err:
+                        results.append(err)
+            finally:
+                w.close()
+                r.close()
+        else:
+            aw, ar = open_ends(spec, open_aio)
+            try:
+                for bench in benches:
+                    try:
+                        results.append(
+                            None
+                            if bench.run_async is None
+                            else ASYNC_LIBRARIES[library](
+                                bench.run_async(aw, ar, budget)
+                            )
+                        )
+                    except Exception as err:
+                        results.append(err)
+            finally:
+                aw.close()
+                ar.close()
+    except Exception as err:
+        results.extend([err] * (len(benches) - len(results)))
+    return results
 
 
 def cell(times: list[float], bench: Bench, baseline: list[float] | None) -> str:
@@ -558,26 +595,28 @@ def run_port(spec: PortSpec, ids: set[str], budget: float) -> int:
     libraries = [*SYNC_LIBRARIES, *ASYNC_LIBRARIES]
     if not spec.pyserial:
         libraries.remove("pyserial")
+    benches = [bench for bench in BENCHES if bench.id in ids]
+    results = {
+        library: run_library(spec, benches, library, budget) for library in libraries
+    }
     failures = 0
     rows: list[str] = []
-    for bench in BENCHES:
-        if bench.id not in ids:
-            continue
-        results: dict[str, list[float] | None] = {}
-        notes: dict[str, str] = {}
+    for i, bench in enumerate(benches):
+        baseline = results.get("pyserial", [None] * len(benches))[i]
+        cells: list[str] = []
         for library in libraries:
-            try:
-                results[library] = run_case(spec, bench, library, budget)
-            except Exception as err:
+            outcome = results[library][i]
+            if isinstance(outcome, Exception):
                 failures += 1
-                results[library] = None
-                notes[library] = f"FAILED: {type(err).__name__}: {err}"
-        baseline = results.get("pyserial")
-        cells = [
-            notes.get(library)
-            or (cell(times, bench, baseline) if (times := results[library]) else "-")
-            for library in libraries
-        ]
+                cells.append(f"FAILED: {type(outcome).__name__}: {outcome}")
+            elif outcome:
+                cells.append(
+                    cell(
+                        outcome, bench, baseline if isinstance(baseline, list) else None
+                    )
+                )
+            else:
+                cells.append("-")
         rows.append(f"| {bench.id} | {bench.label} | " + " | ".join(cells) + " |")
     print(f"\n### {spec.label}\n")
     print("| id | benchmark | " + " | ".join(libraries) + " |")
@@ -608,17 +647,26 @@ def main(argv: list[str] | None = None) -> int:
 
     print("## oxiserial benchmarks\n")
     print(
-        "Times are medians per operation; the ratio is time relative to pyserial "
-        "(above 1 is slower). The numbers assume a release build "
-        "(`maturin develop --release`).\n"
+        "Latency cells are the median time per operation, with the 95th "
+        "percentile; streaming cells are throughput from the median sample. "
+        "The ratio is time relative to pyserial (above 1 is slower).\n"
     )
     ports = [PortSpec("loop://", "loop://", "loop://", pyserial=True)]
     testing = getattr(oxiserial, "_testing", None)
-    if testing is not None:
+    if testing is None:
+        print(
+            "Mock pair skipped: this build has no `test-backend` feature, so it "
+            "also cannot report whether it is a release build. The numbers assume "
+            "one (`maturin develop --release`).\n"
+        )
+    else:
+        if testing.debug_build():
+            print(
+                "**Warning: debug build.** The timings overstate oxiserial's cost; "
+                "rebuild with `maturin develop --release`.\n"
+            )
         a, b = testing.mock_pair()
         ports.append(PortSpec("mock pair", a, b, pyserial=False))
-    else:
-        print("Mock pair skipped: this build has no `test-backend` feature.\n")
     if args.port_a and args.port_b:
         ports.append(
             PortSpec(
