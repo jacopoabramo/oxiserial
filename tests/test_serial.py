@@ -71,6 +71,19 @@ def test_readinto(ports: tuple[Serial, Serial]) -> None:
     assert buffer == b"abcd"
 
 
+def test_readinto_fills_only_the_bytes_read(ports: tuple[Serial, Serial]) -> None:
+    """Fill the start of a buffer view with what arrives and leave the rest alone."""
+    a, b = ports
+    b.timeout = 0.1
+    buffer = bytearray(b"--------")
+    a.write(b"xyz")
+    assert b.readinto(memoryview(buffer)[2:]) == 3
+    assert buffer == b"--xyz---"
+    a.write(b"q")
+    with pytest.raises(TypeError):
+        b.readinto(b"read-only")
+
+
 def test_write_timeout(
     ports: tuple[Serial, Serial], mock_pair: tuple[str, str]
 ) -> None:
