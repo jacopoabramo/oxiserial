@@ -80,6 +80,34 @@ print(reply.wait(timeout=2))
 port.close()
 ```
 
+## Replace pyserial-asyncio
+
+`oxiserial.aio` also has pyserial-asyncio's functions, so code written for
+pyserial-asyncio changes only its import:
+
+```python
+import asyncio
+
+from oxiserial import aio as serial_asyncio
+
+
+async def main() -> None:
+    reader, writer = await serial_asyncio.open_serial_connection(
+        url="COM3", baudrate=115200
+    )
+    writer.write(b"*IDN?\n")
+    await writer.drain()
+    print(await reader.readline())
+    writer.close()
+    await writer.wait_closed()
+
+
+asyncio.run(main())
+```
+
+`create_serial_connection` and `connection_for_serial` connect an asyncio
+protocol to a port, as they do in pyserial-asyncio.
+
 ## Test without hardware
 
 `serial_for_url("loop://")` opens a port that reads back what is written to
