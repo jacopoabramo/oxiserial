@@ -48,7 +48,9 @@ uv run python -m mypy.stubtest oxiserial
 ```
 
 Run all of them before reporting a change as done. Real-port tests need a
-connected pair: `uv run pytest --port-a <A> --port-b <B>`.
+connected pair: `uv run pytest --port-a=<A> --port-b=<B>`. Keep the `=`:
+pytest takes a value after a space for a test path, and then does not read
+`pyproject.toml`.
 
 Benchmarks against pyserial, on a release build:
 `uv run maturin develop --uv --release --features test-backend`, then
