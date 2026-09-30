@@ -276,6 +276,12 @@ impl Port {
         self.file.as_raw_handle()
     }
 
+    /// Sets the driver's input and output queue sizes.
+    pub fn setup_queues(&self, rx: u32, tx: u32) -> io::Result<()> {
+        // SAFETY: the handle is open for as long as `self` lives.
+        check(unsafe { SetupComm(self.handle(), rx, tx) })
+    }
+
     fn escape(&self, function: ESCAPE_COMM_FUNCTION) -> io::Result<()> {
         // SAFETY: the handle is open for as long as `self` lives.
         check(unsafe { EscapeCommFunction(self.handle(), function) })

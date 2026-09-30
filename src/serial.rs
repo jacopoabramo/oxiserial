@@ -356,6 +356,16 @@ impl SerialBase {
         self.core.interrupt_read();
     }
 
+    // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): Windows-only, and tx_size
+    // defaults to rx_size.
+    #[cfg(windows)]
+    #[pyo3(signature = (rx_size = 4096, tx_size = None))]
+    fn set_buffer_size(&self, py: Python<'_>, rx_size: u32, tx_size: Option<u32>) -> PyResult<()> {
+        self.detached(py, |core| {
+            core.set_buffer_size(rx_size, tx_size.unwrap_or(rx_size))
+        })
+    }
+
     fn cancel_write(&self) {
         self.core.interrupt_write();
     }

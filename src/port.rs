@@ -155,6 +155,12 @@ impl PortCore {
 
     // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): cancel_read and cancel_write
     // end the call with what it has, and a cancel made while no call waits ends the next one.
+    /// Sets the driver's input and output queue sizes of the open port.
+    #[cfg(windows)]
+    pub fn set_buffer_size(&self, rx: u32, tx: u32) -> Result<(), SerialError> {
+        self.with_backend(|port| port.set_buffer_size(rx, tx))
+    }
+
     pub fn interrupt_read(&self) {
         self.read_cancel.notify_one();
     }

@@ -560,3 +560,18 @@ def test_cancel_write_returns_what_was_sent(
     _testing.mock_block_writes(mock_pair[0], False)
     assert a.write(b"ok") == 2
     assert b.read(2) == b"ok"
+
+
+def test_set_buffer_size_needs_an_open_port() -> None:
+    """Raise PortNotOpenError when sizing the driver queues of a closed port."""
+    if sys.platform != "win32":
+        pytest.skip("set_buffer_size is Windows-only, as in pyserial")
+    with pytest.raises(PortNotOpenError):
+        Serial().set_buffer_size(65536)
+
+
+def test_set_buffer_size_is_windows_only() -> None:
+    """Leave set_buffer_size out where the OS has no driver queues to size."""
+    if sys.platform == "win32":
+        pytest.skip("checks the platforms without it")
+    assert not hasattr(Serial, "set_buffer_size")
