@@ -8,7 +8,6 @@ use pyo3::sync::PyOnceLock;
 use pyo3::types::{
     PyByteArray, PyBytes, PyDict, PyInt, PyMemoryView, PySlice, PyString, PyTuple, PyType,
 };
-use tokio::runtime::RuntimeFlavor;
 
 use crate::errors::SerialError;
 use crate::future::{OpFuture, Outcome, WAIT_SLICE};
@@ -735,34 +734,26 @@ impl Serial {
     where
         F: Future<Output = Result<Outcome, SerialError>> + Send + 'static,
     {
-        match tokio::runtime::Handle::try_current() {
-            Err(_) => Self::drive(py, op),
-            // A worker, such as one running a done-callback, must hand its queued tasks to
-            // another thread before blocking, or an operation queued behind this call never runs.
-            Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
-                tokio::task::block_in_place(|| Self::drive(py, op))
-            }
-            // A current-thread runtime cannot hand over its tasks; the operation runs on
-            // oxiserial's own workers instead.
-            Ok(_) => OpFuture::spawn(op)?.block(py),
-        }
+        // On an oxiserial worker, such as one running a done-callback, this hands the worker's
+        // queued tasks to another thread before blocking; elsewhere it calls the closure directly.
+        tokio::task::block_in_place(|| Self::drive(py, op))
     }
 
-    /// Runs `op` on this thread, checking for Ctrl-C between slices of the wait.
+    /// Runs `op` on this thread for one wait slice, where a ready result or a short wait
+    /// finishes, then hands it to a worker.
     fn drive<F>(py: Python<'_>, op: F) -> PyResult<Py<PyAny>>
     where
-        F: Future<Output = Result<Outcome, SerialError>> + Send,
+        F: Future<Output = Result<Outcome, SerialError>> + Send + 'static,
     {
         let runtime = runtime()?;
-        let mut op = std::pin::pin!(op);
-        loop {
-            match py.detach(|| {
-                runtime.block_on(async { tokio::time::timeout(WAIT_SLICE, &mut op).await })
-            }) {
-                Ok(result) => return result.map_err(PyErr::from)?.to_py(py),
-                // Returning drops `op`, which cancels it as aborting its task would.
-                Err(_) => py.check_signals()?,
-            }
+        let mut op = Box::pin(op);
+        let first = py
+            .detach(|| runtime.block_on(async { tokio::time::timeout(WAIT_SLICE, &mut op).await }));
+        match first {
+            Ok(result) => result.map_err(PyErr::from)?.to_py(py),
+            // On a worker the operation keeps going while a signal handler runs here, so the
+            // handler can use the port; kept on this thread, it would hold the port's turn.
+            Err(_) => OpFuture::spawn(op)?.block(py),
         }
     }
 }
