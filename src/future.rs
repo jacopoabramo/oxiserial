@@ -53,6 +53,8 @@ struct Callback {
     context: Py<PyAny>,
     /// The loop that was running when the callback was added.
     event_loop: Option<Py<PyAny>>,
+    /// Whether it runs code that can block the thread completing the operation.
+    may_block: bool,
 }
 
 impl Callback {
@@ -174,9 +176,8 @@ fn complete(shared: &Shared, resolution: Resolution) -> bool {
     };
     shared.finished.notify_all();
     if !waiters.is_empty() || !callbacks.is_empty() {
-        // Waiting for the GIL and running callbacks would otherwise hold a worker, and with it
-        // the timers and I/O of every port; off a worker the closure runs directly.
-        tokio::task::block_in_place(|| {
+        let may_block = callbacks.iter().any(|callback| callback.may_block);
+        let run = move || {
             // None when the interpreter is finalizing; its loops are gone by then.
             Python::try_attach(|py| {
                 for waiter in waiters {
@@ -200,7 +201,16 @@ fn complete(shared: &Shared, resolution: Resolution) -> bool {
                     callback.run_or_report(py, "call_soon_threadsafe");
                 }
             });
-        });
+        };
+        if may_block {
+            // Hands the worker's timers and I/O to another thread first, so a callback that
+            // blocks does not stall every port; off a worker the closure runs directly.
+            // ponytail: other completions still wait for the GIL on the worker, usually for
+            // no longer than the switch interval; hand off for those too if that delay shows up.
+            tokio::task::block_in_place(run);
+        } else {
+            run();
+        }
     }
     true
 }
@@ -331,7 +341,7 @@ impl OpFuture {
             .import("contextvars")?
             .call_method0("copy_context")?
             .unbind();
-        Self::register(slf, func, context, None);
+        Self::register(slf, func, context, None, false);
         Ok(())
     }
 
@@ -340,12 +350,14 @@ impl OpFuture {
         func: Py<PyAny>,
         context: Py<PyAny>,
         event_loop: Option<Py<PyAny>>,
+        may_block: bool,
     ) {
         let callback = Arc::new(Callback {
             func,
             future: slf.clone().into_any().unbind(),
             context,
             event_loop,
+            may_block,
         });
         {
             let mut state = lock(&slf.get().shared.state);
@@ -472,11 +484,14 @@ impl OpFuture {
                 .unbind(),
         };
         let event_loop = py.import("asyncio")?.call_method0("_get_running_loop")?;
+        // Without a loop, the callback runs on the completing thread.
+        let may_block = event_loop.is_none();
         Self::register(
             slf,
             r#fn,
             context,
-            (!event_loop.is_none()).then(|| event_loop.unbind()),
+            (!may_block).then(|| event_loop.unbind()),
+            may_block,
         );
         Ok(())
     }
