@@ -45,6 +45,12 @@ def test_sorted_orders_ports_naturally() -> None:
     assert [port.device for port in ports] == ["COM1", "COM2", "COM10"]
 
 
+def test_index_past_hwid_raises_like_pyserial() -> None:
+    """Raise IndexError with pyserial's message for an index past 2."""
+    with pytest.raises(IndexError, match=r"^3 > 2$"):
+        ListPortInfo("COM1")[3]
+
+
 def test_ordering_against_other_types_raises() -> None:
     """Raise TypeError when ordering a port against another type."""
     with pytest.raises(TypeError):

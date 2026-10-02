@@ -149,7 +149,8 @@ impl ListPortInfo {
             0 => Ok(self.device.clone()),
             1 => Ok(self.description.clone()),
             2 => Ok(self.hwid.clone()),
-            _ => Err(PyIndexError::new_err("list index out of range")),
+            // Message matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
+            _ => Err(PyIndexError::new_err(format!("{index} > 2"))),
         }
     }
 
