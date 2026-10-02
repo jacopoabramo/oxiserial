@@ -132,6 +132,21 @@ def test_create_task_accepts_the_coroutine(run: Runner) -> None:
     run(main())
 
 
+def test_write_buffer_limits_round_like_pyserial_asyncio(
+    mock_pair: tuple[str, str], run: Runner
+) -> None:
+    """Derive low as high // 4, rounding down, and name both values in the error."""
+
+    async def main() -> None:
+        transport, recorder = await connect(mock_pair[0])
+        with pytest.raises(ValueError, match=r"^high \(-1\) must be >= low \(-1\)"):
+            transport.set_write_buffer_limits(high=-1)
+        transport.close()
+        await recorder.closed()
+
+    run(main())
+
+
 def test_write_flow_control_pauses_and_resumes(
     mock_pair: tuple[str, str], run: Runner
 ) -> None:

@@ -646,8 +646,10 @@ impl TransportCore {
         low: Option<isize>,
     ) -> PyResult<()> {
         // Matches pyserial-asyncio (BSD-3-Clause, see LICENSES/pyserial-asyncio.txt): defaults and message.
-        let high = high.unwrap_or_else(|| low.map_or(HIGH_WATER as isize, |low| 4 * low));
-        let low = low.unwrap_or(high / 4);
+        // Python computes these on unbounded ints, rounding the division down.
+        let high =
+            high.unwrap_or_else(|| low.map_or(HIGH_WATER as isize, |low| low.saturating_mul(4)));
+        let low = low.unwrap_or(high.div_euclid(4));
         if !(high >= low && low >= 0) {
             return Err(PyValueError::new_err(format!(
                 "high ({high}) must be >= low ({low}) must be >= 0"
