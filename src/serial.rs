@@ -67,6 +67,23 @@ pub(crate) fn expected_bytes(expected: Option<&Bound<'_, PyAny>>) -> PyResult<Ve
     expected.map_or_else(|| Ok(LF.to_vec()), to_bytes)
 }
 
+/// `to_bytes` as pyserial defines it: `bytes` unchanged, anything else through `bytearray()`.
+#[pyfunction(name = "to_bytes")]
+pub fn public_to_bytes<'py>(seq: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
+    if seq.is_instance_of::<PyBytes>() {
+        return Ok(seq.clone());
+    }
+    if seq.is_instance_of::<PyString>() {
+        // Message matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt).
+        return Err(PyTypeError::new_err(format!(
+            "unicode strings are not supported, please encode to bytes: {}",
+            seq.repr()?
+        )));
+    }
+    let copy = PyByteArray::from(seq)?;
+    Ok(PyBytes::new(seq.py(), &copy.to_vec()).into_any())
+}
+
 /// Copies `bytes`, `str` (as UTF-8) or the raw bytes of an object with the buffer protocol.
 ///
 /// An `int` or an iterable of ints raises `TypeError`, although `bytearray()` accepts them.

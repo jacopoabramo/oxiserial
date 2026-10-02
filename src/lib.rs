@@ -81,6 +81,37 @@ fn _oxiserial(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<serial::SerialBase>()?;
     m.add_class::<serial::Serial>()?;
     m.add_function(wrap_pyfunction!(serial::serial_for_url, m)?)?;
+    m.add_function(wrap_pyfunction!(serial::public_to_bytes, m)?)?;
+
+    // pyserial keeps these in serial.serialutil and re-exports them from serial.
+    let serialutil = PyModule::new(py, "oxiserial.serialutil")?;
+    for name in [
+        "XON",
+        "XOFF",
+        "CR",
+        "LF",
+        "PARITY_NONE",
+        "PARITY_EVEN",
+        "PARITY_ODD",
+        "PARITY_MARK",
+        "PARITY_SPACE",
+        "PARITY_NAMES",
+        "STOPBITS_ONE",
+        "STOPBITS_ONE_POINT_FIVE",
+        "STOPBITS_TWO",
+        "FIVEBITS",
+        "SIXBITS",
+        "SEVENBITS",
+        "EIGHTBITS",
+        "SerialException",
+        "SerialTimeoutException",
+        "PortNotOpenError",
+        "SerialBase",
+        "to_bytes",
+    ] {
+        serialutil.add(name, m.getattr(name)?)?;
+    }
+    add_submodule(m, "serialutil", &serialutil)?;
 
     let aio_module = PyModule::new(py, "oxiserial.aio")?;
     aio_module.add_class::<future::OpFuture>()?;
@@ -109,7 +140,11 @@ fn _oxiserial(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let list_ports_module = PyModule::new(py, "oxiserial.tools.list_ports")?;
     list_ports_module.add_class::<list_ports::ListPortInfo>()?;
     list_ports_module.add_function(wrap_pyfunction!(list_ports::comports, &list_ports_module)?)?;
+    list_ports_module.add_function(wrap_pyfunction!(list_ports::grep, &list_ports_module)?)?;
     add_submodule(&tools_module, "list_ports", &list_ports_module)?;
+    let list_ports_common = PyModule::new(py, "oxiserial.tools.list_ports_common")?;
+    list_ports_common.add_class::<list_ports::ListPortInfo>()?;
+    add_submodule(&tools_module, "list_ports_common", &list_ports_common)?;
     add_submodule(m, "tools", &tools_module)?;
 
     #[cfg(feature = "test-backend")]

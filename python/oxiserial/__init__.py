@@ -1,2 +1,2 @@
 from oxiserial._oxiserial import *  # noqa: F403
-from oxiserial._oxiserial import __version__, aio, tools
+from oxiserial._oxiserial import __version__, aio, serialutil, tools
