@@ -151,10 +151,10 @@ def test_write_buffer_limits_round_like_pyserial_asyncio(
 
 
 @pytest.mark.filterwarnings("ignore:This process:DeprecationWarning")
-def test_write_in_a_forked_child_ends_the_connection(
+def test_write_in_a_forked_child_closes_the_transport(
     mock_pair: tuple[str, str],
 ) -> None:
-    """Pass the error to connection_lost when a forked child writes to the transport."""
+    """Close the transport and drop its buffer when a forked child writes to it."""
     if sys.platform == "win32":
         pytest.skip("needs fork()")
     loop = asyncio.new_event_loop()
@@ -162,14 +162,14 @@ def test_write_in_a_forked_child_ends_the_connection(
     try:
         pid = os.fork()
         if pid == 0:
+            # The child cannot run the loop: macOS does not pass its kqueue to a child.
             code = 1
             try:
                 transport.write(b"x")
-                exc = loop.run_until_complete(recorder.closed())
-                if isinstance(exc, SerialException) and "fork" in str(exc):
+                if transport.is_closing() and transport.get_write_buffer_size() == 0:
                     code = 0
                 else:
-                    print(f"connection_lost got {exc!r}", file=sys.stderr)
+                    print("the transport is still open", file=sys.stderr)
             except BaseException:
                 traceback.print_exc()
             finally:
