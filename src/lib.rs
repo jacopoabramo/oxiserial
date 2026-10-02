@@ -81,6 +81,37 @@ fn _oxiserial(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<serial::SerialBase>()?;
     m.add_class::<serial::Serial>()?;
     m.add_function(wrap_pyfunction!(serial::serial_for_url, m)?)?;
+    m.add_function(wrap_pyfunction!(serial::public_to_bytes, m)?)?;
+
+    // pyserial keeps these in serial.serialutil and re-exports them from serial.
+    let serialutil = PyModule::new(py, "oxiserial.serialutil")?;
+    for name in [
+        "XON",
+        "XOFF",
+        "CR",
+        "LF",
+        "PARITY_NONE",
+        "PARITY_EVEN",
+        "PARITY_ODD",
+        "PARITY_MARK",
+        "PARITY_SPACE",
+        "PARITY_NAMES",
+        "STOPBITS_ONE",
+        "STOPBITS_ONE_POINT_FIVE",
+        "STOPBITS_TWO",
+        "FIVEBITS",
+        "SIXBITS",
+        "SEVENBITS",
+        "EIGHTBITS",
+        "SerialException",
+        "SerialTimeoutException",
+        "PortNotOpenError",
+        "SerialBase",
+        "to_bytes",
+    ] {
+        serialutil.add(name, m.getattr(name)?)?;
+    }
+    add_submodule(m, "serialutil", &serialutil)?;
 
     let aio_module = PyModule::new(py, "oxiserial.aio")?;
     aio_module.add_class::<future::OpFuture>()?;

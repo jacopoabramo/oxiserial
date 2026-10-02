@@ -1,13 +1,14 @@
 """Serial port access with a pyserial-compatible API."""
 
 import sys
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from enum import IntEnum
 from typing import Any, ClassVar, Final, Self
 
 from typing_extensions import Buffer, disjoint_base
 
 from oxiserial import aio as aio
+from oxiserial import serialutil as serialutil
 from oxiserial import tools as tools
 
 __version__: str
@@ -547,4 +548,16 @@ def serial_for_url(
         If `url` has a scheme other than `loop://`, or a setting is not valid.
     SerialException
         If the device cannot be opened.
+    """
+
+def to_bytes(seq: Buffer | Iterable[int] | int) -> bytes:
+    """Return `seq` as `bytes`.
+
+    `bytes` comes back unchanged. Anything else goes through `bytearray()`,
+    so an `int` gives that many zero bytes.
+
+    Raises
+    ------
+    TypeError
+        If `seq` is a `str`, or `bytearray()` does not accept it.
     """
