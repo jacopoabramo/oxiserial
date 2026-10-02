@@ -194,13 +194,16 @@ impl ListPortInfo {
 pub fn comports(py: Python<'_>, include_links: bool) -> PyResult<Vec<ListPortInfo>> {
     let _ = include_links;
     let ports = py
-        .detach(serialport::available_ports)
+        .detach(|| {
+            serialport::available_ports().map(|ports| {
+                ports
+                    .into_iter()
+                    .filter(|port| !has_no_uart(&port.port_name))
+                    .collect::<Vec<_>>()
+            })
+        })
         .map_err(SerialError::from)?;
-    Ok(ports
-        .into_iter()
-        .filter(|port| !has_no_uart(&port.port_name))
-        .map(ListPortInfo::from_info)
-        .collect())
+    Ok(ports.into_iter().map(ListPortInfo::from_info).collect())
 }
 
 /// Whether `device` is a legacy serial slot with no UART behind it: Linux lists every ttyS
