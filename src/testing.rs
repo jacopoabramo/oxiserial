@@ -7,6 +7,7 @@ use pyo3::types::PyDict;
 use crate::backend::mock;
 use crate::errors::SerialError;
 use crate::future::{OpFuture, Outcome};
+use crate::serial::Serial;
 
 fn unknown(port: &str) -> PyErr {
     PyValueError::new_err(format!("unknown mock port '{port}'"))
@@ -60,6 +61,15 @@ fn panic_in_task() -> PyResult<OpFuture> {
     Ok(OpFuture::spawn(async { panic!("panic_in_task") })?)
 }
 
+#[pyfunction]
+#[allow(
+    clippy::panic,
+    reason = "drives the test of a blocking call that panics before it hands off"
+)]
+fn panic_in_call(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    Serial::run(py, async { panic!("panic_in_call") })
+}
+
 /// Whether the extension was compiled without optimisations.
 #[pyfunction]
 fn debug_build() -> bool {
@@ -73,6 +83,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mock_state, m)?)?;
     m.add_function(wrap_pyfunction!(delayed, m)?)?;
     m.add_function(wrap_pyfunction!(panic_in_task, m)?)?;
+    m.add_function(wrap_pyfunction!(panic_in_call, m)?)?;
     m.add_function(wrap_pyfunction!(debug_build, m)?)?;
     Ok(())
 }

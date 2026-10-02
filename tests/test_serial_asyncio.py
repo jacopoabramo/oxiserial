@@ -1,5 +1,8 @@
 import asyncio
+import os
+import sys
 import threading
+import traceback
 from collections.abc import Callable
 from typing import Any
 
@@ -130,6 +133,55 @@ def test_create_task_accepts_the_coroutine(run: Runner) -> None:
         await recorder.closed()
 
     run(main())
+
+
+def test_write_buffer_limits_round_like_pyserial_asyncio(
+    mock_pair: tuple[str, str], run: Runner
+) -> None:
+    """Derive low as high // 4, rounding down, and name both values in the error."""
+
+    async def main() -> None:
+        transport, recorder = await connect(mock_pair[0])
+        with pytest.raises(ValueError, match=r"^high \(-1\) must be >= low \(-1\)"):
+            transport.set_write_buffer_limits(high=-1)
+        transport.close()
+        await recorder.closed()
+
+    run(main())
+
+
+@pytest.mark.filterwarnings("ignore:This process:DeprecationWarning")
+def test_write_in_a_forked_child_closes_the_transport(
+    mock_pair: tuple[str, str],
+) -> None:
+    """Close the transport and drop its buffer when a forked child writes to it."""
+    if sys.platform == "win32":
+        pytest.skip("needs fork()")
+    loop = asyncio.new_event_loop()
+    transport, recorder = loop.run_until_complete(connect(mock_pair[0]))
+    try:
+        pid = os.fork()
+        if pid == 0:
+            # The child cannot run the loop: macOS does not pass its kqueue to a child.
+            code = 1
+            try:
+                transport.write(b"x")
+                if transport.is_closing() and transport.get_write_buffer_size() == 0:
+                    # As connection_lost would; the pending read must not wake.
+                    transport.serial.close()
+                    code = 0
+                else:
+                    print("the transport is still open", file=sys.stderr)
+            except BaseException:
+                traceback.print_exc()
+            finally:
+                os._exit(code)
+        _, status = os.waitpid(pid, 0)
+        assert os.waitstatus_to_exitcode(status) == 0
+    finally:
+        transport.close()
+        loop.run_until_complete(recorder.closed())
+        loop.close()
 
 
 def test_write_flow_control_pauses_and_resumes(

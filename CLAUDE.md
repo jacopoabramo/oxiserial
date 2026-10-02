@@ -31,6 +31,8 @@ that can be waited on (`.wait()`) or awaited.
 - Releases are cut by pushing a `vX.Y.Z` tag; CI sets the version from it.
 - Dependencies go through `uv add` and `cargo add`, never by editing
   `pyproject.toml` or `Cargo.toml` by hand.
+- No Rust doctests: the crate is a `cdylib`, and `cargo test` and pytest
+  cover its behaviour.
 
 ## Commands
 

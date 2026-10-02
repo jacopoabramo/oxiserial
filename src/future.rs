@@ -10,7 +10,7 @@ use tokio::task::AbortHandle;
 
 use crate::errors::SerialError;
 use crate::lock;
-use crate::runtime::runtime;
+use crate::runtime::{forked, runtime};
 
 /// Value produced by a finished port operation.
 #[derive(Clone)]
@@ -53,6 +53,8 @@ struct Callback {
     context: Py<PyAny>,
     /// The loop that was running when the callback was added.
     event_loop: Option<Py<PyAny>>,
+    /// Whether it runs code that can block the thread completing the operation.
+    may_block: bool,
 }
 
 impl Callback {
@@ -79,7 +81,8 @@ impl Callback {
 
 #[derive(Default)]
 struct State {
-    result: Option<Resolution>,
+    // Shared, so handing the result to each reader does not copy its bytes.
+    result: Option<Arc<Resolution>>,
     waiters: Vec<Waiter>,
     callbacks: Vec<Arc<Callback>>,
     abort: Option<AbortHandle>,
@@ -158,13 +161,14 @@ fn schedule(
 
 /// Stores the first resolution, wakes every waiter and runs the done callbacks; later calls return false.
 fn complete(shared: &Shared, resolution: Resolution) -> bool {
+    let resolution = Arc::new(resolution);
     let (waiters, callbacks) = {
         let mut state = lock(&shared.state);
         if state.result.is_some() {
             return false;
         }
         state.abort = None;
-        state.result = Some(resolution.clone());
+        state.result = Some(Arc::clone(&resolution));
         (
             std::mem::take(&mut state.waiters),
             std::mem::take(&mut state.callbacks),
@@ -172,29 +176,41 @@ fn complete(shared: &Shared, resolution: Resolution) -> bool {
     };
     shared.finished.notify_all();
     if !waiters.is_empty() || !callbacks.is_empty() {
-        // None when the interpreter is finalizing; its loops are gone by then.
-        Python::try_attach(|py| {
-            for waiter in waiters {
-                let closed = waiter
-                    .event_loop
-                    .bind(py)
-                    .call_method0("is_closed")
-                    .and_then(|closed| closed.is_truthy());
-                match closed {
-                    // Nobody can receive a result on a closed loop; scheduling on it would raise.
-                    Ok(true) => {}
-                    Ok(false) => {
-                        if let Err(err) = schedule(py, shared, &waiter, &resolution) {
-                            err.write_unraisable(py, None);
+        let may_block = callbacks.iter().any(|callback| callback.may_block);
+        let run = move || {
+            // None when the interpreter is finalizing; its loops are gone by then.
+            Python::try_attach(|py| {
+                for waiter in waiters {
+                    let closed = waiter
+                        .event_loop
+                        .bind(py)
+                        .call_method0("is_closed")
+                        .and_then(|closed| closed.is_truthy());
+                    match closed {
+                        // Nobody can receive a result on a closed loop; scheduling on it would raise.
+                        Ok(true) => {}
+                        Ok(false) => {
+                            if let Err(err) = schedule(py, shared, &waiter, &resolution) {
+                                err.write_unraisable(py, None);
+                            }
                         }
+                        Err(err) => err.write_unraisable(py, None),
                     }
-                    Err(err) => err.write_unraisable(py, None),
                 }
-            }
-            for callback in callbacks {
-                callback.run_or_report(py, "call_soon_threadsafe");
-            }
-        });
+                for callback in callbacks {
+                    callback.run_or_report(py, "call_soon_threadsafe");
+                }
+            });
+        };
+        if may_block {
+            // Hands the worker's timers and I/O to another thread first, so a callback that
+            // blocks does not stall every port; off a worker the closure runs directly.
+            // ponytail: other completions still wait for the GIL on the worker, usually for
+            // no longer than the switch interval; hand off for those too if that delay shows up.
+            tokio::task::block_in_place(run);
+        } else {
+            run();
+        }
     }
     true
 }
@@ -203,7 +219,10 @@ fn cancel_shared(shared: &Shared) -> bool {
     let handle = lock(&shared.state).abort.clone();
     let cancelled = complete(shared, Err(SerialError::Cancelled));
     // Aborting first would let the task's drop guard store a panic result before this one.
-    if cancelled && let Some(handle) = handle {
+    if cancelled
+        && !forked()
+        && let Some(handle) = handle
+    {
         handle.abort();
     }
     cancelled
@@ -213,13 +232,7 @@ struct CompleteOnDrop(Arc<Shared>);
 
 impl Drop for CompleteOnDrop {
     fn drop(&mut self) {
-        complete(
-            &self.0,
-            Err(SerialError::Os {
-                code: None,
-                message: "the operation panicked".into(),
-            }),
-        );
+        complete(&self.0, Err(SerialError::panicked()));
     }
 }
 
@@ -318,10 +331,7 @@ impl OpFuture {
             // Reported as a panic on a worker is; the drop guards run without the GIL.
             Err(_) => {
                 py.detach(|| drop(op));
-                Ok(Self::resolved(Err(SerialError::Os {
-                    code: None,
-                    message: "the operation panicked".into(),
-                })))
+                Ok(Self::resolved(Err(SerialError::panicked())))
             }
         }
     }
@@ -334,7 +344,7 @@ impl OpFuture {
             .import("contextvars")?
             .call_method0("copy_context")?
             .unbind();
-        Self::register(slf, func, context, None);
+        Self::register(slf, func, context, None, false);
         Ok(())
     }
 
@@ -343,12 +353,14 @@ impl OpFuture {
         func: Py<PyAny>,
         context: Py<PyAny>,
         event_loop: Option<Py<PyAny>>,
+        may_block: bool,
     ) {
         let callback = Arc::new(Callback {
             func,
             future: slf.clone().into_any().unbind(),
             context,
             event_loop,
+            may_block,
         });
         {
             let mut state = lock(&slf.get().shared.state);
@@ -366,7 +378,7 @@ impl OpFuture {
 
     fn resolved(resolution: Resolution) -> Self {
         let shared = Shared::default();
-        lock(&shared.state).result = Some(resolution);
+        lock(&shared.state).result = Some(Arc::new(resolution));
         Self {
             shared: Arc::new(shared),
         }
@@ -475,11 +487,14 @@ impl OpFuture {
                 .unbind(),
         };
         let event_loop = py.import("asyncio")?.call_method0("_get_running_loop")?;
+        // Without a loop, the callback runs on the completing thread.
+        let may_block = event_loop.is_none();
         Self::register(
             slf,
             r#fn,
             context,
-            (!event_loop.is_none()).then(|| event_loop.unbind()),
+            (!may_block).then(|| event_loop.unbind()),
+            may_block,
         );
         Ok(())
     }
@@ -507,13 +522,13 @@ impl OpFuture {
 
     fn cancelled(&self) -> bool {
         matches!(
-            lock(&self.shared.state).result,
+            lock(&self.shared.state).result.as_deref(),
             Some(Err(SerialError::Cancelled))
         )
     }
 
     fn exception(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        let failure = match &lock(&self.shared.state).result {
+        let failure = match lock(&self.shared.state).result.as_deref() {
             None => None,
             Some(Ok(_)) => return Ok(None),
             Some(Err(err)) => Some(err.clone()),

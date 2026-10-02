@@ -100,6 +100,12 @@ def test_panicking_operation_raises() -> None:
     assert future.done()
 
 
+def test_blocking_call_that_panics_at_once_raises() -> None:
+    """Raise SerialException when a blocking call panics before it hands off."""
+    with pytest.raises(SerialException, match="panicked"):
+        _testing.panic_in_call()
+
+
 @pytest.mark.parametrize("delay", [-1, float("nan"), float("inf")])
 def test_delayed_rejects_negative_delay(delay: float) -> None:
     """Reject negative and non-finite delays with ValueError."""
@@ -126,6 +132,20 @@ def test_callback_without_loop_runs_in_the_completing_thread() -> None:
     canceller.start()
     canceller.join()
     assert calls == [(future, canceller.ident)]
+
+
+def test_blocking_callbacks_leave_other_operations_running() -> None:
+    """Finish other operations while callbacks block their completing threads."""
+    release = threading.Event()
+    blocked = [_testing.delayed(b"x", 0.05) for _ in range(4)]
+    for future in blocked:
+        future.add_done_callback(lambda f: release.wait(10))
+    try:
+        for future in blocked:
+            future.wait(timeout=5)
+        assert _testing.delayed(b"y", 0.05).wait(timeout=2) == b"y"
+    finally:
+        release.set()
 
 
 def test_callback_runs_on_the_running_loop(run: Runner) -> None:

@@ -54,6 +54,14 @@ impl SerialError {
         }
     }
 
+    /// An operation that panicked, reported as an error rather than unwinding into Python.
+    pub fn panicked() -> Self {
+        Self::Os {
+            code: None,
+            message: "the operation panicked".into(),
+        }
+    }
+
     /// Whether a read or write on an open port failed because the device is gone.
     pub fn device_gone(&self) -> bool {
         match self {
