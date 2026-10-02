@@ -10,7 +10,7 @@ use tokio::task::AbortHandle;
 
 use crate::errors::SerialError;
 use crate::lock;
-use crate::runtime::runtime;
+use crate::runtime::{forked, runtime};
 
 /// Value produced by a finished port operation.
 #[derive(Clone)]
@@ -219,7 +219,10 @@ fn cancel_shared(shared: &Shared) -> bool {
     let handle = lock(&shared.state).abort.clone();
     let cancelled = complete(shared, Err(SerialError::Cancelled));
     // Aborting first would let the task's drop guard store a panic result before this one.
-    if cancelled && let Some(handle) = handle {
+    if cancelled
+        && !forked()
+        && let Some(handle) = handle
+    {
         handle.abort();
     }
     cancelled

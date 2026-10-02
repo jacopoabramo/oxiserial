@@ -167,6 +167,8 @@ def test_write_in_a_forked_child_closes_the_transport(
             try:
                 transport.write(b"x")
                 if transport.is_closing() and transport.get_write_buffer_size() == 0:
+                    # As connection_lost would; the pending read must not wake.
+                    transport.serial.close()
                     code = 0
                 else:
                     print("the transport is still open", file=sys.stderr)

@@ -12,6 +12,7 @@ use tokio::time::{Instant, timeout_at};
 use crate::backend::{self, Backend, Drain};
 use crate::errors::SerialError;
 use crate::lock;
+use crate::runtime::forked;
 use crate::settings::{self, Settings};
 
 struct State {
@@ -162,16 +163,22 @@ impl PortCore {
     }
 
     pub fn interrupt_read(&self) {
-        self.read_cancel.notify_one();
+        if !forked() {
+            self.read_cancel.notify_one();
+        }
     }
 
     pub fn interrupt_write(&self) {
-        self.write_cancel.notify_one();
+        if !forked() {
+            self.write_cancel.notify_one();
+        }
     }
 
     pub fn close(&self) {
         let closed = lock(&self.backend).take();
-        self.closed.notify_waiters();
+        if !forked() {
+            self.closed.notify_waiters();
+        }
         drop(closed);
     }
 

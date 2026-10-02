@@ -27,6 +27,14 @@ fn start() -> Result<Owned, SerialError> {
     })
 }
 
+/// Whether this is a forked child of the process that started the runtime.
+///
+/// The child must not wake the runtime's tasks: that wakes its I/O driver, whose
+/// descriptors the child may not have, as with kqueue on macOS.
+pub fn forked() -> bool {
+    matches!(RUNTIME.get(), Some(Ok(owned)) if owned.pid != std::process::id())
+}
+
 /// The runtime that runs every port operation, started on first use.
 pub fn runtime() -> Result<&'static Runtime, SerialError> {
     let owned = RUNTIME.get_or_init(start).as_ref().map_err(Clone::clone)?;
