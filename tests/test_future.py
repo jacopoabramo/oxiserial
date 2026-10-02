@@ -134,6 +134,20 @@ def test_callback_without_loop_runs_in_the_completing_thread() -> None:
     assert calls == [(future, canceller.ident)]
 
 
+def test_blocking_callbacks_leave_other_operations_running() -> None:
+    """Finish other operations while callbacks block their completing threads."""
+    release = threading.Event()
+    blocked = [_testing.delayed(b"x", 0.05) for _ in range(4)]
+    for future in blocked:
+        future.add_done_callback(lambda f: release.wait(10))
+    try:
+        for future in blocked:
+            future.wait(timeout=5)
+        assert _testing.delayed(b"y", 0.05).wait(timeout=2) == b"y"
+    finally:
+        release.set()
+
+
 def test_callback_runs_on_the_running_loop(run: Runner) -> None:
     """Run a callback added inside a running loop on that loop's thread."""
     future = _testing.delayed(b"x", 10)

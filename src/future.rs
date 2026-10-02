@@ -174,28 +174,32 @@ fn complete(shared: &Shared, resolution: Resolution) -> bool {
     };
     shared.finished.notify_all();
     if !waiters.is_empty() || !callbacks.is_empty() {
-        // None when the interpreter is finalizing; its loops are gone by then.
-        Python::try_attach(|py| {
-            for waiter in waiters {
-                let closed = waiter
-                    .event_loop
-                    .bind(py)
-                    .call_method0("is_closed")
-                    .and_then(|closed| closed.is_truthy());
-                match closed {
-                    // Nobody can receive a result on a closed loop; scheduling on it would raise.
-                    Ok(true) => {}
-                    Ok(false) => {
-                        if let Err(err) = schedule(py, shared, &waiter, &resolution) {
-                            err.write_unraisable(py, None);
+        // Waiting for the GIL and running callbacks would otherwise hold a worker, and with it
+        // the timers and I/O of every port; off a worker the closure runs directly.
+        tokio::task::block_in_place(|| {
+            // None when the interpreter is finalizing; its loops are gone by then.
+            Python::try_attach(|py| {
+                for waiter in waiters {
+                    let closed = waiter
+                        .event_loop
+                        .bind(py)
+                        .call_method0("is_closed")
+                        .and_then(|closed| closed.is_truthy());
+                    match closed {
+                        // Nobody can receive a result on a closed loop; scheduling on it would raise.
+                        Ok(true) => {}
+                        Ok(false) => {
+                            if let Err(err) = schedule(py, shared, &waiter, &resolution) {
+                                err.write_unraisable(py, None);
+                            }
                         }
+                        Err(err) => err.write_unraisable(py, None),
                     }
-                    Err(err) => err.write_unraisable(py, None),
                 }
-            }
-            for callback in callbacks {
-                callback.run_or_report(py, "call_soon_threadsafe");
-            }
+                for callback in callbacks {
+                    callback.run_or_report(py, "call_soon_threadsafe");
+                }
+            });
         });
     }
     true
