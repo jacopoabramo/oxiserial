@@ -300,10 +300,14 @@ impl TransportCore {
             data
         };
         let core = Arc::clone(&this.core);
-        let future = start_write(
+        let future = match start_write(
             py,
             async move { core.write_all(&data).await.map(Outcome::Int) },
-        )?;
+        ) {
+            Ok(future) => future,
+            // The queue was taken above, so the error ends the connection rather than losing it.
+            Err(err) => return Self::fatal_error(slf, err.into()),
+        };
         let future = Bound::new(py, future)?;
         lock(&this.state).write = Some(future.clone().into_any().unbind());
         Self::when_done(slf, &future, c"on_write", Self::on_write)
@@ -486,19 +490,33 @@ impl TransportCore {
         }
         if drain {
             let core = Arc::clone(&this.core);
-            let future = start_write(
+            match start_write(
                 py,
                 async move { core.flush().await.map(|()| Outcome::Unit) },
-            )?;
-            let future = Bound::new(py, future)?;
-            lock(&this.state).drain = Some(future.clone().into_any().unbind());
-            Self::when_done(slf, &future, c"connection_lost", Self::connection_lost)
-        } else {
-            let lost = Self::callback(slf, c"connection_lost", Self::connection_lost)?;
-            this.event_loop
-                .call_method1(py, "call_soon", (lost, py.None()))?;
-            Ok(())
+            ) {
+                Ok(future) => {
+                    let future = Bound::new(py, future)?;
+                    lock(&this.state).drain = Some(future.clone().into_any().unbind());
+                    return Self::when_done(
+                        slf,
+                        &future,
+                        c"connection_lost",
+                        Self::connection_lost,
+                    );
+                }
+                // `lost` is set, so nothing else calls connection_lost: it runs below, without a flush.
+                Err(err) => {
+                    let mut state = lock(&this.state);
+                    if state.close_exc.is_none() {
+                        state.close_exc = Some(PyErr::from(err).into_value(py).into_any());
+                    }
+                }
+            }
         }
+        let lost = Self::callback(slf, c"connection_lost", Self::connection_lost)?;
+        this.event_loop
+            .call_method1(py, "call_soon", (lost, py.None()))?;
+        Ok(())
     }
 
     fn connection_lost(slf: &Bound<'_, Self>, _arg: &Bound<'_, PyAny>) -> PyResult<()> {

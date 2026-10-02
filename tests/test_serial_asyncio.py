@@ -1,5 +1,8 @@
 import asyncio
+import os
+import sys
 import threading
+import traceback
 from collections.abc import Callable
 from typing import Any
 
@@ -145,6 +148,38 @@ def test_write_buffer_limits_round_like_pyserial_asyncio(
         await recorder.closed()
 
     run(main())
+
+
+@pytest.mark.filterwarnings("ignore:This process:DeprecationWarning")
+def test_write_in_a_forked_child_ends_the_connection(
+    mock_pair: tuple[str, str],
+) -> None:
+    """Pass the error to connection_lost when a forked child writes to the transport."""
+    if sys.platform == "win32":
+        pytest.skip("needs fork()")
+    loop = asyncio.new_event_loop()
+    transport, recorder = loop.run_until_complete(connect(mock_pair[0]))
+    try:
+        pid = os.fork()
+        if pid == 0:
+            code = 1
+            try:
+                transport.write(b"x")
+                exc = loop.run_until_complete(recorder.closed())
+                if isinstance(exc, SerialException) and "fork" in str(exc):
+                    code = 0
+                else:
+                    print(f"connection_lost got {exc!r}", file=sys.stderr)
+            except BaseException:
+                traceback.print_exc()
+            finally:
+                os._exit(code)
+        _, status = os.waitpid(pid, 0)
+        assert os.waitstatus_to_exitcode(status) == 0
+    finally:
+        transport.close()
+        loop.run_until_complete(recorder.closed())
+        loop.close()
 
 
 def test_write_flow_control_pauses_and_resumes(
