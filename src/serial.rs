@@ -751,7 +751,7 @@ impl Serial {
         Arc::clone(&slf.as_super().get().core)
     }
 
-    fn run<F>(py: Python<'_>, op: F) -> PyResult<Py<PyAny>>
+    pub(crate) fn run<F>(py: Python<'_>, op: F) -> PyResult<Py<PyAny>>
     where
         F: Future<Output = Result<Outcome, SerialError>> + Send + 'static,
     {
@@ -768,13 +768,21 @@ impl Serial {
     {
         let runtime = runtime()?;
         let mut op = Box::pin(op);
-        let first = py
-            .detach(|| runtime.block_on(async { tokio::time::timeout(WAIT_SLICE, &mut op).await }));
+        let first = py.detach(|| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                runtime.block_on(async { tokio::time::timeout(WAIT_SLICE, &mut op).await })
+            }))
+        });
         match first {
-            Ok(result) => result.map_err(PyErr::from)?.to_py(py),
+            Ok(Ok(result)) => result.map_err(PyErr::from)?.to_py(py),
             // On a worker the operation keeps going while a signal handler runs here, so the
             // handler can use the port; kept on this thread, it would hold the port's turn.
-            Err(_) => OpFuture::spawn(op)?.block(py),
+            Ok(Err(_)) => OpFuture::spawn(op)?.block(py),
+            // Reported as a panic after the hand-off is; the drop guards run without the GIL.
+            Err(_) => {
+                py.detach(|| drop(op));
+                Err(SerialError::panicked().into())
+            }
         }
     }
 }

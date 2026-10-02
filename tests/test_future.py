@@ -100,6 +100,12 @@ def test_panicking_operation_raises() -> None:
     assert future.done()
 
 
+def test_blocking_call_that_panics_at_once_raises() -> None:
+    """Raise SerialException when a blocking call panics before it hands off."""
+    with pytest.raises(SerialException, match="panicked"):
+        _testing.panic_in_call()
+
+
 @pytest.mark.parametrize("delay", [-1, float("nan"), float("inf")])
 def test_delayed_rejects_negative_delay(delay: float) -> None:
     """Reject negative and non-finite delays with ValueError."""

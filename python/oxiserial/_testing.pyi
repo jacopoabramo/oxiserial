@@ -9,6 +9,7 @@ __all__ = [
     "mock_state",
     "delayed",
     "panic_in_task",
+    "panic_in_call",
     "debug_build",
 ]
 
@@ -56,6 +57,9 @@ def delayed(value: bytes, delay: float) -> Future[bytes]:
 
 def panic_in_task() -> Future[bytes]:
     """Return a future whose task panics, so waiting on it raises `SerialException`."""
+
+def panic_in_call() -> None:
+    """Make a blocking call that panics at once, which raises `SerialException`."""
 
 def debug_build() -> bool:
     """Return whether the extension was compiled without optimisations."""

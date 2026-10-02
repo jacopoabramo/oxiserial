@@ -215,13 +215,7 @@ struct CompleteOnDrop(Arc<Shared>);
 
 impl Drop for CompleteOnDrop {
     fn drop(&mut self) {
-        complete(
-            &self.0,
-            Err(SerialError::Os {
-                code: None,
-                message: "the operation panicked".into(),
-            }),
-        );
+        complete(&self.0, Err(SerialError::panicked()));
     }
 }
 
@@ -320,10 +314,7 @@ impl OpFuture {
             // Reported as a panic on a worker is; the drop guards run without the GIL.
             Err(_) => {
                 py.detach(|| drop(op));
-                Ok(Self::resolved(Err(SerialError::Os {
-                    code: None,
-                    message: "the operation panicked".into(),
-                })))
+                Ok(Self::resolved(Err(SerialError::panicked())))
             }
         }
     }
