@@ -5,7 +5,7 @@ from typing import Self
 
 from typing_extensions import disjoint_base
 
-__all__ = ["ListPortInfo", "comports"]
+__all__ = ["ListPortInfo", "comports", "grep"]
 
 @disjoint_base
 class ListPortInfo:
@@ -71,6 +71,19 @@ def comports(include_links: bool = False) -> list[ListPortInfo]:
 
     Raises
     ------
+    SerialException
+        If the ports cannot be listed.
+    """
+
+def grep(regexp: str, include_links: bool = False) -> Iterator[ListPortInfo]:
+    """Return the ports from `comports` whose device, description or hwid matches.
+
+    `regexp` is searched for in each field, ignoring case.
+
+    Raises
+    ------
+    re.error
+        If `regexp` is not a valid regular expression.
     SerialException
         If the ports cannot be listed.
     """

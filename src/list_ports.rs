@@ -3,7 +3,7 @@ use std::path::Path;
 
 use pyo3::exceptions::{PyIndexError, PyTypeError};
 use pyo3::prelude::*;
-use pyo3::types::PyList;
+use pyo3::types::{PyIterator, PyList};
 use serialport::{Location, SerialPortInfo, SerialPortType};
 
 use crate::errors::SerialError;
@@ -205,6 +205,33 @@ pub fn comports(py: Python<'_>, include_links: bool) -> PyResult<Vec<ListPortInf
         })
         .map_err(SerialError::from)?;
     Ok(ports.into_iter().map(ListPortInfo::from_info).collect())
+}
+
+/// The ports from `comports` whose device, description or hwid matches `regexp`, ignoring case.
+// Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): the fields searched and the flag.
+#[pyfunction]
+#[pyo3(signature = (regexp, include_links = false))]
+pub fn grep<'py>(
+    py: Python<'py>,
+    regexp: &Bound<'py, PyAny>,
+    include_links: bool,
+) -> PyResult<Bound<'py, PyIterator>> {
+    let re = py.import("re")?;
+    let pattern = re.call_method1("compile", (regexp, re.getattr("I")?))?;
+    let found = PyList::empty(py);
+    for port in comports(py, include_links)? {
+        let mut matched = false;
+        for field in [&port.device, &port.description, &port.hwid] {
+            if !pattern.call_method1("search", (field,))?.is_none() {
+                matched = true;
+                break;
+            }
+        }
+        if matched {
+            found.append(port)?;
+        }
+    }
+    found.try_iter()
 }
 
 /// Whether `device` is a legacy serial slot with no UART behind it: Linux lists every ttyS

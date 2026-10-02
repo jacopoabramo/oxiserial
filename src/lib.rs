@@ -140,7 +140,11 @@ fn _oxiserial(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let list_ports_module = PyModule::new(py, "oxiserial.tools.list_ports")?;
     list_ports_module.add_class::<list_ports::ListPortInfo>()?;
     list_ports_module.add_function(wrap_pyfunction!(list_ports::comports, &list_ports_module)?)?;
+    list_ports_module.add_function(wrap_pyfunction!(list_ports::grep, &list_ports_module)?)?;
     add_submodule(&tools_module, "list_ports", &list_ports_module)?;
+    let list_ports_common = PyModule::new(py, "oxiserial.tools.list_ports_common")?;
+    list_ports_common.add_class::<list_ports::ListPortInfo>()?;
+    add_submodule(&tools_module, "list_ports_common", &list_ports_common)?;
     add_submodule(m, "tools", &tools_module)?;
 
     #[cfg(feature = "test-backend")]

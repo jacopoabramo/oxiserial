@@ -1,9 +1,11 @@
 import os
+import re
 import sys
 
 import pytest
 
-from oxiserial.tools.list_ports import ListPortInfo, comports
+from oxiserial.tools import list_ports_common
+from oxiserial.tools.list_ports import ListPortInfo, comports, grep
 
 
 def test_usb_info_matches_pyserial_format() -> None:
@@ -27,6 +29,20 @@ def test_usb_info_matches_pyserial_format() -> None:
 def test_comports_returns_port_info() -> None:
     """Return only ListPortInfo objects from comports."""
     assert all(isinstance(port, ListPortInfo) for port in comports())
+
+
+def test_list_ports_common_provides_the_same_class() -> None:
+    """Import ListPortInfo from list_ports_common as the class comports returns."""
+    assert list_ports_common.ListPortInfo("COM1") == ListPortInfo("COM1")
+
+
+def test_grep_finds_a_port_ignoring_case() -> None:
+    """Find a port by its device name in another case, and none for no match."""
+    ports = comports()
+    if not ports:
+        pytest.skip("no serial ports on this machine")
+    assert ports[0] in list(grep(re.escape(ports[0].device.swapcase())))
+    assert list(grep("(?!)")) == []
 
 
 def test_equality_compares_device_only() -> None:

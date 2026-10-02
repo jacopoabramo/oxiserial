@@ -134,6 +134,9 @@ for port in sorted(comports()):
     print(port.device, port.description, port.hwid)
 ```
 
+`grep(regexp)`, from the same module, returns only the ports whose device,
+description or hwid matches `regexp`, ignoring case.
+
 ## Differences from pyserial
 
 - `write()` also accepts `str` and sends it as UTF-8.
