@@ -570,7 +570,11 @@ impl TransportCore {
             if state.closing || data.is_empty() {
                 return Ok(());
             }
-            state.queue.extend_from_slice(&data);
+            if state.queue.is_empty() {
+                state.queue = data;
+            } else {
+                state.queue.extend_from_slice(&data);
+            }
             state.write.is_none()
         };
         if start {

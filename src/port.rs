@@ -521,14 +521,16 @@ impl PortCore {
         let overall =
             settings::duration(settings.timeout).and_then(|t| Instant::now().checked_add(t));
         let gap = settings::duration(settings.inter_byte_timeout);
-        let mut out = Vec::with_capacity(size.min(4096));
-        let mut chunk = vec![0u8; size.clamp(1, 4096)];
+        let mut out = Vec::new();
         while out.len() < size {
-            let want = (size - out.len()).min(chunk.len());
-            let deadline = next_deadline(overall, gap, !out.is_empty());
-            match self.read_chunk(&mut chunk[..want], deadline).await? {
-                Some(n) => out.extend_from_slice(&chunk[..n]),
-                None => break,
+            let start = out.len();
+            // Grown a chunk at a time, so a huge `size` with a timeout allocates only what arrives.
+            out.resize(start + (size - start).min(4096), 0);
+            let deadline = next_deadline(overall, gap, start > 0);
+            let read = self.read_chunk(&mut out[start..], deadline).await?;
+            out.truncate(start + read.unwrap_or(0));
+            if read.is_none() {
+                break;
             }
         }
         Ok(out)

@@ -77,6 +77,9 @@ pub(crate) fn to_bytes(data: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
     if let Ok(text) = data.cast::<PyString>() {
         return Ok(text.to_str()?.as_bytes().to_vec());
     }
+    if let Ok(array) = data.cast::<PyByteArray>() {
+        return Ok(array.to_vec());
+    }
     // memoryview() accepts exactly the objects with the buffer protocol.
     let view = PyMemoryView::from(data).map_err(|err| {
         if err.is_instance_of::<PyTypeError>(data.py()) {

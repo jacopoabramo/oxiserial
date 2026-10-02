@@ -79,7 +79,8 @@ impl Callback {
 
 #[derive(Default)]
 struct State {
-    result: Option<Resolution>,
+    // Shared, so handing the result to each reader does not copy its bytes.
+    result: Option<Arc<Resolution>>,
     waiters: Vec<Waiter>,
     callbacks: Vec<Arc<Callback>>,
     abort: Option<AbortHandle>,
@@ -158,13 +159,14 @@ fn schedule(
 
 /// Stores the first resolution, wakes every waiter and runs the done callbacks; later calls return false.
 fn complete(shared: &Shared, resolution: Resolution) -> bool {
+    let resolution = Arc::new(resolution);
     let (waiters, callbacks) = {
         let mut state = lock(&shared.state);
         if state.result.is_some() {
             return false;
         }
         state.abort = None;
-        state.result = Some(resolution.clone());
+        state.result = Some(Arc::clone(&resolution));
         (
             std::mem::take(&mut state.waiters),
             std::mem::take(&mut state.callbacks),
@@ -366,7 +368,7 @@ impl OpFuture {
 
     fn resolved(resolution: Resolution) -> Self {
         let shared = Shared::default();
-        lock(&shared.state).result = Some(resolution);
+        lock(&shared.state).result = Some(Arc::new(resolution));
         Self {
             shared: Arc::new(shared),
         }
@@ -507,13 +509,13 @@ impl OpFuture {
 
     fn cancelled(&self) -> bool {
         matches!(
-            lock(&self.shared.state).result,
+            lock(&self.shared.state).result.as_deref(),
             Some(Err(SerialError::Cancelled))
         )
     }
 
     fn exception(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
-        let failure = match &lock(&self.shared.state).result {
+        let failure = match lock(&self.shared.state).result.as_deref() {
             None => None,
             Some(Ok(_)) => return Ok(None),
             Some(Err(err)) => Some(err.clone()),

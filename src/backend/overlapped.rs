@@ -356,26 +356,24 @@ impl Port {
         check(unsafe { ClearCommBreak(self.handle()) })
     }
 
-    /// Reads up to `len` bytes that the driver already holds.
-    fn read_buffered(&mut self, len: usize) -> io::Result<&[u8]> {
+    /// Fills `buf` from the bytes that the driver already holds and returns the count.
+    fn read_buffered(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let handle = self.handle();
         let op = &mut self.read;
-        op.buffer.resize(len, 0);
         let overlapped = op.start();
-        // SAFETY: the buffer and OVERLAPPED belong to `op`, which is not touched again until the
-        // blocking `result` below has seen the read complete, or `Op::drop` has cancelled it.
+        // SAFETY: `buf` outlives this call, and the OVERLAPPED belongs to `op`. Neither is used
+        // by the kernel after the blocking `result` below has seen the read complete.
         let ok = unsafe {
             ReadFile(
                 handle,
-                op.buffer.as_mut_ptr(),
-                op.buffer.len() as u32,
+                buf.as_mut_ptr(),
+                buf.len() as u32,
                 ptr::null_mut(),
                 overlapped,
             )
         };
         op.issued(ok)?;
-        let n = op.result(true).unwrap_or(Ok(0))?;
-        Ok(&op.buffer[..n])
+        op.result(true).unwrap_or(Ok(0))
     }
 
     /// Starts a WaitCommEvent unless one is pending; false if an event was already recorded.
@@ -449,9 +447,10 @@ impl AsyncRead for Port {
             let queued = this.bytes_to_read()? as usize;
             if queued > 0 {
                 // Never more than the driver holds, so in_waiting and PurgeComm see every unread byte.
-                let data = this.read_buffered(queued.min(buf.remaining()))?;
-                if !data.is_empty() {
-                    buf.put_slice(data);
+                let n =
+                    this.read_buffered(buf.initialize_unfilled_to(queued.min(buf.remaining())))?;
+                if n > 0 {
+                    buf.advance(n);
                     return Poll::Ready(Ok(()));
                 }
                 continue;
