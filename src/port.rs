@@ -174,6 +174,14 @@ impl PortCore {
         }
     }
 
+    /// Drops a read cancel that no read has taken yet.
+    pub fn discard_read_cancel(&self) {
+        // Polled to completion: dropping a `Notified` that took the permit would store it again.
+        let notified = std::pin::pin!(self.read_cancel.notified());
+        // Ready means it took the pending cancel; Pending, that there was none.
+        let _ = notified.poll(&mut Context::from_waker(std::task::Waker::noop()));
+    }
+
     pub fn close(&self) {
         let closed = lock(&self.backend).take();
         if !forked() {
@@ -776,6 +784,24 @@ mod tests {
         assert_eq!(b.read(4).await?, b"ab");
         let waited = start.elapsed();
         assert!(waited >= Duration::from_secs(1) && waited < Duration::from_millis(1100));
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_discarded_cancel_leaves_the_next_read_waiting() -> Result<(), SerialError> {
+        let (a, b, _) = open_pair(|s| s.timeout = Some(1.0.into()))?;
+        b.interrupt_read();
+        b.discard_read_cancel();
+        let (read, written) = tokio::join!(b.read(1), async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            a.write(b"x").await
+        });
+        assert_eq!(read?, b"x");
+        written?;
+        // A discard with nothing pending leaves a later cancel working.
+        b.discard_read_cancel();
+        b.interrupt_read();
+        assert_eq!(b.read(1).await?, b"");
         Ok(())
     }
 

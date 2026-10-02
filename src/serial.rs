@@ -376,6 +376,10 @@ impl SerialBase {
         self.core.interrupt_read();
     }
 
+    fn _discard_cancel_read(&self) {
+        self.core.discard_read_cancel();
+    }
+
     // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): Windows-only, and tx_size
     // defaults to rx_size.
     #[cfg(windows)]
