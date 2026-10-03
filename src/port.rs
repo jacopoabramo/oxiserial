@@ -801,7 +801,9 @@ mod tests {
         // A discard with nothing pending leaves a later cancel working.
         b.discard_read_cancel();
         b.interrupt_read();
+        let start = Instant::now();
         assert_eq!(b.read(1).await?, b"");
+        assert_eq!(start.elapsed(), Duration::ZERO);
         Ok(())
     }
 
