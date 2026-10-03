@@ -145,7 +145,8 @@ description or hwid matches `regexp`, ignoring case.
 - `serial_for_url` accepts device names and `loop://`; other URLs, such as
   `socket://`, raise `ValueError`. `Serial("loop://")` also opens a
   loopback port.
-- `serial.threaded` and `serial.rs485` are not available yet.
+- `serial.rs485` is not available yet; `serial.threaded` is
+  `oxiserial.threaded`.
 
 ## License
 

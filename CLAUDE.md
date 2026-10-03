@@ -9,8 +9,8 @@ that can be waited on (`.wait()`) or awaited.
 
 - `src/`: all runtime code (Rust). The extension module is
   `oxiserial._oxiserial`.
-- `python/oxiserial/`: `.pyi` stubs, `py.typed`, and an `__init__.py` that
-  only re-exports `oxiserial._oxiserial`.
+- `python/oxiserial/`: `.pyi` stubs, `py.typed`, an `__init__.py` that
+  only re-exports `oxiserial._oxiserial`, and `threaded.py`.
 - `.github/workflows/`: `ci.yaml` calls `run-tests.yaml` and
   `build-wheels.yaml`, then publishes. Started from `maturin generate-ci
   github`, now maintained by hand.
@@ -31,6 +31,9 @@ that can be waited on (`.wait()`) or awaited.
 - Releases are cut by pushing a `vX.Y.Z` tag; CI sets the version from it.
 - Dependencies go through `uv add` and `cargo add`, never by editing
   `pyproject.toml` or `Cargo.toml` by hand.
+- Pure-Python pyserial modules that do no I/O of their own, such as
+  `threaded.py`, live in `python/oxiserial/`, rewritten for Python 3.11
+  with full annotations.
 - No Rust doctests: the crate is a `cdylib`, and `cargo test` and pytest
   cover its behaviour.
 
