@@ -303,6 +303,8 @@ class SerialBase:
 
         A cancel made while no write is waiting ends the next write at once.
         """
+    def _discard_cancel_read(self) -> None:
+        """Drop a cancel made while no read was waiting, so the next read waits."""
     if sys.platform == "win32":
         def set_buffer_size(
             self, rx_size: int = 4096, tx_size: int | None = None

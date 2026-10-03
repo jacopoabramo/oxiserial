@@ -5,6 +5,7 @@ from oxiserial import Serial, serial_for_url
 from oxiserial.aio import Future, create_serial_connection, open_serial_connection
 from oxiserial.aio import Serial as AioSerial
 from oxiserial.aio import serial_for_url as aio_serial_for_url
+from oxiserial.threaded import LineReader, ReaderThread
 
 
 def sync_api(port: Serial) -> None:
@@ -44,3 +45,18 @@ async def serial_asyncio_api(loop: asyncio.AbstractEventLoop) -> None:
     reader, writer = await open_serial_connection(url="loop://")
     assert_type(reader, asyncio.StreamReader)
     assert_type(writer, asyncio.StreamWriter)
+
+
+class Printer(LineReader):
+    """A protocol subclass for the type checks."""
+
+    def handle_line(self, line: str) -> None:
+        print(line)
+
+
+def threaded_api(port: Serial) -> None:
+    """Type the reader thread's protocol as the class its factory makes."""
+    thread = ReaderThread(port, Printer)
+    assert_type(thread.connect(), tuple[ReaderThread[Printer], Printer])
+    with thread as protocol:
+        assert_type(protocol, Printer)
