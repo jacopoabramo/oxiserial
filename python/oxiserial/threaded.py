@@ -192,7 +192,9 @@ class ReaderThread(threading.Thread, Generic[P]):
         """End the reader loop and wait up to 2 s for the thread; the port stays open.
 
         Once the thread has ended, a cancel it did not need is dropped, so the
-        next read on the port waits as usual.
+        next read on the port waits as usual. If the thread is still running
+        after 2 s and has not taken the cancel, the cancel stays and the next
+        read on the port returns at once.
         """
         self.alive = False
         self.serial.cancel_read()
