@@ -21,6 +21,15 @@ struct State {
     rts: bool,
     dtr: bool,
     break_on: bool,
+    /// Whether the driver of the open port switches RTS for `settings.rs485`.
+    rs485_by_driver: bool,
+}
+
+impl State {
+    /// The RTS level the port is configured with: the receive level while RS-485 is on.
+    fn configured_rts(&self) -> bool {
+        self.settings.rs485.map_or(self.rts, |r| r.rts_while_rx)
+    }
 }
 
 /// A serial port shared by the sync and async Python classes.
@@ -102,6 +111,7 @@ impl PortCore {
                 rts: true,
                 dtr: true,
                 break_on: false,
+                rs485_by_driver: false,
             }),
             backend: Mutex::new(None),
             read_turn: tokio::sync::Mutex::new(()),
@@ -142,13 +152,19 @@ impl PortCore {
         let (port, settings, rts, dtr) = {
             let state = lock(&self.state);
             let port = state.port.clone().ok_or(SerialError::NoPort)?;
-            (port, state.settings.clone(), state.rts, state.dtr)
+            (
+                port,
+                state.settings.clone(),
+                state.configured_rts(),
+                state.dtr,
+            )
         };
         if slot.is_some() {
             return Err(SerialError::AlreadyOpen);
         }
         // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): open order.
         let opened = backend::open(&port, &settings, rts, dtr)?;
+        self.check_rs485(opened.as_ref(), &settings)?;
         opened.clear_buffers(true, false)?;
         *slot = Some(opened);
         Ok(())
@@ -183,7 +199,12 @@ impl PortCore {
     }
 
     pub fn close(&self) {
-        let closed = lock(&self.backend).take();
+        let mut closed = lock(&self.backend).take();
+        if let Some(port) = closed.as_mut()
+            && std::mem::take(&mut lock(&self.state).rs485_by_driver)
+        {
+            port.disable_rs485();
+        }
         if !forked() {
             self.closed.notify_waiters();
         }
@@ -212,17 +233,66 @@ impl PortCore {
             let mut state = lock(&self.state);
             let before = state.settings.clone();
             change(&mut state.settings);
-            (before, state.settings.clone(), state.rts, state.dtr)
+            if state.settings.rtscts && state.settings.rs485.is_some() {
+                state.settings = before;
+                return Err(SerialError::Value(
+                    "rs485 cannot be combined with rtscts".into(),
+                ));
+            }
+            (
+                before,
+                state.settings.clone(),
+                state.configured_rts(),
+                state.dtr,
+            )
         };
         match slot.as_mut() {
             Some(port) if before.port_config_differs(&settings) => {
-                let result = port.configure(&settings, rts, dtr);
-                if result.is_err() {
-                    lock(&self.state).settings = before;
+                if settings.rs485.is_none() && lock(&self.state).rs485_by_driver {
+                    port.disable_rs485();
                 }
-                result
+                if let Err(err) = port.configure(&settings, rts, dtr) {
+                    lock(&self.state).settings = before;
+                    return Err(err);
+                }
+                let checked = self.check_rs485(port.as_ref(), &settings);
+                if checked.is_err() {
+                    let (rts, dtr) = {
+                        let mut state = lock(&self.state);
+                        state.settings = before.clone();
+                        (state.configured_rts(), state.dtr)
+                    };
+                    // The port took the rejected settings, so it gets the stored ones back.
+                    port.configure(&before, rts, dtr)?;
+                    self.check_rs485(port.as_ref(), &before)?;
+                }
+                checked
             }
             _ => Ok(()),
+        }
+    }
+
+    /// Records whether the driver switches RTS for `settings.rs485`, and refuses loopback
+    /// where it does not, since only the driver controls the receiver.
+    fn check_rs485(&self, port: &dyn Backend, settings: &Settings) -> Result<(), SerialError> {
+        let by_driver = settings.rs485.is_some() && port.rs485_by_driver(settings);
+        lock(&self.state).rs485_by_driver = by_driver;
+        if settings.rs485.is_some_and(|r| r.loopback) && !by_driver {
+            return Err(SerialError::Value(
+                "loopback needs a driver that switches RTS".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Who switches RTS for RS-485 on the open port, or `None` when it is off or closed.
+    pub fn rs485_switched_by(&self) -> Option<&'static str> {
+        let open = self.is_open();
+        let state = lock(&self.state);
+        match state.settings.rs485 {
+            Some(_) if open && state.rs485_by_driver => Some("driver"),
+            Some(_) if open => Some("oxiserial"),
+            _ => None,
         }
     }
 
@@ -230,7 +300,7 @@ impl PortCore {
         self.set_line(
             |state| {
                 state.rts = level;
-                state.settings.rtscts
+                state.settings.rtscts || state.settings.rs485.is_some()
             },
             |port| port.set_rts(level),
         )

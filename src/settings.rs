@@ -127,6 +127,7 @@ pub struct Settings {
     pub rtscts: bool,
     pub dsrdtr: bool,
     pub exclusive: Option<bool>,
+    pub rs485: Option<Rs485>,
 }
 
 impl Default for Settings {
@@ -143,6 +144,7 @@ impl Default for Settings {
             rtscts: false,
             dsrdtr: false,
             exclusive: None,
+            rs485: None,
         }
     }
 }

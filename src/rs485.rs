@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyFloat;
+use pyo3::types::{PyBool, PyFloat};
 
 use crate::settings::Rs485;
 
@@ -78,6 +78,25 @@ impl PyRs485 {
             seconds(self.0.delay_before_tx)?,
             seconds(self.0.delay_after_tx)?,
             python_bool(self.0.loopback),
+        ))
+    }
+}
+
+/// A Python `bool | RS485` given for `rs485`; `None` is handled by the caller's `Option`.
+pub struct Rs485Arg(pub Option<Rs485>);
+
+impl<'a, 'py> FromPyObject<'a, 'py> for Rs485Arg {
+    type Error = PyErr;
+
+    fn extract(obj: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        if let Ok(on) = obj.cast::<PyBool>() {
+            return Ok(Self(on.is_true().then(Rs485::default)));
+        }
+        if let Ok(value) = obj.cast::<PyRs485>() {
+            return Ok(Self(Some(value.get().0)));
+        }
+        Err(PyTypeError::new_err(
+            "rs485 must be a bool, an RS485 or None",
         ))
     }
 }

@@ -3,7 +3,7 @@
 import sys
 from collections.abc import Iterable, Iterator, Mapping
 from enum import IntEnum
-from typing import Any, ClassVar, Final, Self, final
+from typing import Any, ClassVar, Final, Literal, Self, final
 
 from typing_extensions import Buffer, disjoint_base
 
@@ -231,11 +231,34 @@ class SerialBase:
     @exclusive.setter
     def exclusive(self, value: bool | None) -> None: ...
     @property
+    def rs485(self) -> RS485 | None:
+        """How RTS drives an RS-485 transceiver, or `None` when RS-485 is off.
+
+        Assigning `True` stands for `RS485()`, and `False` or `None` turns
+        RS-485 off.
+
+        Raises
+        ------
+        TypeError
+            If the value is not a bool, an `RS485` or `None`.
+        ValueError
+            If `rtscts` is on, or if `loopback` is asked for where oxiserial
+            switches RTS.
+        """
+    @rs485.setter
+    def rs485(self, value: bool | RS485 | None) -> None: ...
+    @property
+    def rs485_switched_by(self) -> Literal["driver", "oxiserial"] | None:
+        """Who switches RTS for RS-485 on the open port.
+
+        `None` when RS-485 is off or the port is closed.
+        """
+    @property
     def rts(self) -> bool:
         """State of the RTS line.
 
-        While `rtscts` is on, flow control drives the line: an assigned level is
-        stored and applied when `rtscts` is turned off.
+        While `rtscts` or `rs485` is on, the line is not the caller's: an
+        assigned level is stored and applied when both are off.
         """
     @rts.setter
     def rts(self, value: bool) -> None: ...
@@ -421,6 +444,7 @@ class Serial(SerialBase):
         dsrdtr: bool | None = False,
         inter_byte_timeout: float | None = None,
         exclusive: bool | None = None,
+        rs485: bool | RS485 | None = False,
     ) -> None:
         """Create the port, and open it if `port` is given.
 

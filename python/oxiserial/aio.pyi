@@ -8,7 +8,7 @@ from typing import Any, Generic, Self, TypeVar, final
 
 from typing_extensions import Buffer
 
-from oxiserial import SerialBase
+from oxiserial import RS485, SerialBase
 
 __all__ = [
     "Future",
@@ -147,6 +147,7 @@ class Serial(SerialBase):
         dsrdtr: bool | None = False,
         inter_byte_timeout: float | None = None,
         exclusive: bool | None = None,
+        rs485: bool | RS485 | None = False,
     ) -> None:
         """Create the port, and open it if `port` is given.
 
