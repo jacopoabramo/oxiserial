@@ -13,7 +13,7 @@ use crate::backend::{self, Backend, Drain};
 use crate::errors::SerialError;
 use crate::lock;
 use crate::runtime::forked;
-use crate::settings::{self, Settings};
+use crate::settings::{self, Rs485, Settings};
 
 struct State {
     port: Option<String>,
@@ -21,6 +21,15 @@ struct State {
     rts: bool,
     dtr: bool,
     break_on: bool,
+    /// Whether the driver of the open port switches RTS for `settings.rs485`.
+    rs485_by_driver: bool,
+}
+
+impl State {
+    /// The RTS level the port is configured with: the receive level while RS-485 is on.
+    fn configured_rts(&self) -> bool {
+        self.settings.rs485.map_or(self.rts, |r| r.rts_while_rx)
+    }
 }
 
 /// A serial port shared by the sync and async Python classes.
@@ -35,8 +44,48 @@ pub struct PortCore {
     write_cancel: Notify,
 }
 
-/// The end of a `send_break` waited for by a blocking OS sleep, which is precise where tokio's timer is not.
+/// The end of a precise wait, slept by a blocking OS sleep, which is precise where tokio's timer is not.
 const PRECISE_BREAK_TAIL: Duration = Duration::from_millis(5);
+
+/// Waits for `duration`, ending with a blocking OS sleep, which is precise where tokio's timer is not.
+async fn sleep_precisely(duration: Duration) -> Result<(), SerialError> {
+    if duration.is_zero() {
+        return Ok(());
+    }
+    let start = Instant::now();
+    // tokio's timer ticks in whole milliseconds and wakes late, so it only waits
+    // for the part that close or cancel may need to interrupt.
+    let coarse = duration.saturating_sub(PRECISE_BREAK_TAIL);
+    // Even a zero sleep waits for the timer's next tick.
+    if !coarse.is_zero() {
+        tokio::time::sleep(coarse).await;
+    }
+    let rest = duration.saturating_sub(start.elapsed());
+    tokio::task::spawn_blocking(move || std::thread::sleep(rest))
+        .await
+        .map_err(|err| SerialError::Os {
+            code: None,
+            message: err.to_string(),
+        })
+}
+
+/// Sets RTS back to its receive level when a switched RS-485 write ends early.
+struct RtsGuard<'a>(Option<(&'a PortCore, bool)>);
+
+impl RtsGuard<'_> {
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for RtsGuard<'_> {
+    fn drop(&mut self) {
+        if let Some((core, level)) = self.0 {
+            // A transceiver left sending blocks the bus; a closed port has nothing to restore.
+            let _ = core.with_backend(|port| port.set_rts(level));
+        }
+    }
+}
 
 /// Clears the break condition when `send_break` is cancelled before it clears it itself.
 struct BreakGuard<'a>(Option<&'a PortCore>);
@@ -102,6 +151,7 @@ impl PortCore {
                 rts: true,
                 dtr: true,
                 break_on: false,
+                rs485_by_driver: false,
             }),
             backend: Mutex::new(None),
             read_turn: tokio::sync::Mutex::new(()),
@@ -142,13 +192,19 @@ impl PortCore {
         let (port, settings, rts, dtr) = {
             let state = lock(&self.state);
             let port = state.port.clone().ok_or(SerialError::NoPort)?;
-            (port, state.settings.clone(), state.rts, state.dtr)
+            (
+                port,
+                state.settings.clone(),
+                state.configured_rts(),
+                state.dtr,
+            )
         };
         if slot.is_some() {
             return Err(SerialError::AlreadyOpen);
         }
         // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): open order.
-        let opened = backend::open(&port, &settings, rts, dtr)?;
+        let mut opened = backend::open(&port, &settings, rts, dtr)?;
+        self.check_rs485(opened.as_mut(), &settings)?;
         opened.clear_buffers(true, false)?;
         *slot = Some(opened);
         Ok(())
@@ -183,7 +239,12 @@ impl PortCore {
     }
 
     pub fn close(&self) {
-        let closed = lock(&self.backend).take();
+        let mut closed = lock(&self.backend).take();
+        if let Some(port) = closed.as_mut()
+            && std::mem::take(&mut lock(&self.state).rs485_by_driver)
+        {
+            port.disable_rs485();
+        }
         if !forked() {
             self.closed.notify_waiters();
         }
@@ -212,17 +273,81 @@ impl PortCore {
             let mut state = lock(&self.state);
             let before = state.settings.clone();
             change(&mut state.settings);
-            (before, state.settings.clone(), state.rts, state.dtr)
+            if state.settings.rtscts && state.settings.rs485.is_some() {
+                state.settings = before;
+                return Err(SerialError::Value(
+                    "rs485 cannot be combined with rtscts".into(),
+                ));
+            }
+            (
+                before,
+                state.settings.clone(),
+                state.configured_rts(),
+                state.dtr,
+            )
         };
         match slot.as_mut() {
             Some(port) if before.port_config_differs(&settings) => {
-                let result = port.configure(&settings, rts, dtr);
-                if result.is_err() {
-                    lock(&self.state).settings = before;
+                if settings.rs485.is_none() && lock(&self.state).rs485_by_driver {
+                    port.disable_rs485();
                 }
-                result
+                if let Err(err) = port.configure(&settings, rts, dtr) {
+                    lock(&self.state).settings = before;
+                    return Err(err);
+                }
+                let checked = self.check_rs485(port.as_mut(), &settings);
+                if checked.is_err() {
+                    let (rts, dtr) = {
+                        let mut state = lock(&self.state);
+                        state.settings = before.clone();
+                        (state.configured_rts(), state.dtr)
+                    };
+                    // The port took the rejected settings, so it gets the stored ones back.
+                    port.configure(&before, rts, dtr)?;
+                    self.check_rs485(port.as_mut(), &before)?;
+                }
+                checked
             }
             _ => Ok(()),
+        }
+    }
+
+    /// Records whether the driver switches RTS for `settings.rs485`. Where it does not, refuses
+    /// loopback, since only the driver controls the receiver, and a port without an RTS line.
+    fn check_rs485(&self, port: &mut dyn Backend, settings: &Settings) -> Result<(), SerialError> {
+        let by_driver = settings.rs485.is_some() && port.rs485_by_driver(settings);
+        lock(&self.state).rs485_by_driver = by_driver;
+        let Some(rs485) = settings.rs485.filter(|_| !by_driver) else {
+            return Ok(());
+        };
+        if rs485.loopback {
+            return Err(SerialError::Value(
+                "loopback needs a driver that switches RTS".into(),
+            ));
+        }
+        // configure() ignores a missing line, so writing the receive level again is the probe.
+        let probed = port.set_rts(rs485.rts_while_rx);
+        #[cfg(unix)]
+        if let Err(SerialError::Os {
+            code: Some(libc::ENOTTY | libc::EINVAL),
+            ..
+        }) = probed
+        {
+            return Err(SerialError::Value(
+                "rs485 needs a port with an RTS line".into(),
+            ));
+        }
+        probed
+    }
+
+    /// Who switches RTS for RS-485 on the open port, or `None` when it is off or closed.
+    pub fn rs485_switched_by(&self) -> Option<&'static str> {
+        let open = self.is_open();
+        let state = lock(&self.state);
+        match state.settings.rs485 {
+            Some(_) if open && state.rs485_by_driver => Some("driver"),
+            Some(_) if open => Some("oxiserial"),
+            _ => None,
         }
     }
 
@@ -230,7 +355,7 @@ impl PortCore {
         self.set_line(
             |state| {
                 state.rts = level;
-                state.settings.rtscts
+                state.settings.rtscts || state.settings.rs485.is_some()
             },
             |port| port.set_rts(level),
         )
@@ -385,78 +510,103 @@ impl PortCore {
         // Declared after `_turn`, so it cancels a leftover write before the next writer starts.
         let _cancel = CancelWrite(self);
         self.until_closed(async {
-            let write_timeout = if ignore_timeout {
-                None
-            } else {
-                self.settings().write_timeout
+            let Some(rs485) = self.software_rs485() else {
+                return self.send(data, ignore_timeout).await;
             };
-            let deadline =
-                settings::duration(write_timeout).and_then(|t| Instant::now().checked_add(t));
-            // write_all sends everything, so only write can be cancelled.
-            let cancelled = self.write_cancel.notified();
-            tokio::pin!(cancelled);
-            let mut written = 0;
-            while written < data.len() {
-                let n = match deadline {
-                    _ if write_timeout.is_some_and(|t| t.as_f64() == 0.0) => {
-                        match poll_once(|cx| self.poll_write_some(cx, &data[written..])).await {
-                            Some(result) => result?,
-                            // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): a
-                            // write still pending counts as written and completes in the driver.
-                            None => {
-                                return Ok(written + self.with_backend(|p| Ok(p.detach_write()))?);
-                            }
-                        }
-                    }
-                    None => tokio::select! {
-                        result = poll_fn(|cx| self.poll_write_some(cx, &data[written..])) => result?,
-                        () = &mut cancelled, if !ignore_timeout => return Ok(written),
-                    },
-                    Some(at) => tokio::select! {
-                        result = timeout_at(at, poll_fn(|cx| self.poll_write_some(cx, &data[written..]))) => {
-                            // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): message.
-                            result.map_err(|_| SerialError::Timeout("Write timeout".into()))??
-                        }
-                        () = &mut cancelled, if !ignore_timeout => return Ok(written),
-                    },
-                };
-                // An aborted write, for example by reset_output_buffer, ends the call with what was sent, as in pyserial.
-                if n == 0 {
-                    return Ok(written);
-                }
-                written += n;
-            }
-            Ok(data.len())
+            self.with_backend(|port| port.set_rts(rs485.rts_while_tx))?;
+            let mut restore = RtsGuard(Some((self, rs485.rts_while_rx)));
+            sleep_precisely(rs485.delay_before_tx).await?;
+            let sent = self.send(data, ignore_timeout).await?;
+            // RTS stays up until the last byte has left the OS, even for a non-blocking write.
+            self.drain().await?;
+            sleep_precisely(rs485.delay_after_tx).await?;
+            restore.disarm();
+            self.with_backend(|port| port.set_rts(rs485.rts_while_rx))?;
+            Ok(sent)
         })
         .await
     }
 
+    /// Sends `data` under the write timeout; a cancel or an aborted write ends it with what was sent.
+    async fn send(&self, data: &[u8], ignore_timeout: bool) -> Result<usize, SerialError> {
+        let write_timeout = if ignore_timeout {
+            None
+        } else {
+            self.settings().write_timeout
+        };
+        let deadline =
+            settings::duration(write_timeout).and_then(|t| Instant::now().checked_add(t));
+        // write_all sends everything, so only write can be cancelled.
+        let cancelled = self.write_cancel.notified();
+        tokio::pin!(cancelled);
+        let mut written = 0;
+        while written < data.len() {
+            let n = match deadline {
+                _ if write_timeout.is_some_and(|t| t.as_f64() == 0.0) => {
+                    match poll_once(|cx| self.poll_write_some(cx, &data[written..])).await {
+                        Some(result) => result?,
+                        // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): a
+                        // write still pending counts as written and completes in the driver.
+                        None => {
+                            return Ok(written + self.with_backend(|p| Ok(p.detach_write()))?);
+                        }
+                    }
+                }
+                None => tokio::select! {
+                    result = poll_fn(|cx| self.poll_write_some(cx, &data[written..])) => result?,
+                    () = &mut cancelled, if !ignore_timeout => return Ok(written),
+                },
+                Some(at) => tokio::select! {
+                    result = timeout_at(at, poll_fn(|cx| self.poll_write_some(cx, &data[written..]))) => {
+                        // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): message.
+                        result.map_err(|_| SerialError::Timeout("Write timeout".into()))??
+                    }
+                    () = &mut cancelled, if !ignore_timeout => return Ok(written),
+                },
+            };
+            // An aborted write, for example by reset_output_buffer, ends the call with what was sent, as in pyserial.
+            if n == 0 {
+                return Ok(written);
+            }
+            written += n;
+        }
+        Ok(data.len())
+    }
+
+    /// The RS-485 setting when it is on and the driver does not switch RTS.
+    fn software_rs485(&self) -> Option<Rs485> {
+        let state = lock(&self.state);
+        state.settings.rs485.filter(|_| !state.rs485_by_driver)
+    }
+
     pub async fn flush(&self) -> Result<(), SerialError> {
         let _turn = self.write_turn.lock().await;
-        self.until_closed(async {
-            match self.with_backend(|port| port.drain_handle())? {
-                Drain::Done => Ok(()),
-                #[cfg(unix)]
-                Drain::Fd(fd) => tokio::task::spawn_blocking(move || {
-                    nix::sys::termios::tcdrain(&fd)
-                        .map_err(|errno| SerialError::from(std::io::Error::from(errno)))
-                })
-                .await
-                .map_err(|err| SerialError::Os {
-                    code: None,
-                    message: format!("flush failed: {err}"),
-                })?,
-                #[cfg(not(unix))]
-                Drain::PollOutWaiting => {
-                    poll_fn(|cx| self.poll_flush_some(cx)).await?;
-                    while self.out_waiting()? > 0 {
-                        tokio::time::sleep(Duration::from_millis(5)).await;
-                    }
-                    Ok(())
+        self.until_closed(self.drain()).await
+    }
+
+    /// Waits until the OS holds no unsent bytes.
+    async fn drain(&self) -> Result<(), SerialError> {
+        match self.with_backend(|port| port.drain_handle())? {
+            Drain::Done => Ok(()),
+            #[cfg(unix)]
+            Drain::Fd(fd) => tokio::task::spawn_blocking(move || {
+                nix::sys::termios::tcdrain(&fd)
+                    .map_err(|errno| SerialError::from(std::io::Error::from(errno)))
+            })
+            .await
+            .map_err(|err| SerialError::Os {
+                code: None,
+                message: format!("flush failed: {err}"),
+            })?,
+            #[cfg(not(unix))]
+            Drain::PollOutWaiting => {
+                poll_fn(|cx| self.poll_flush_some(cx)).await?;
+                while self.out_waiting()? > 0 {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
                 }
+                Ok(())
             }
-        })
-        .await
+        }
     }
 
     pub async fn send_break(&self, duration: Duration) -> Result<(), SerialError> {
@@ -464,21 +614,7 @@ impl PortCore {
         self.until_closed(async {
             self.set_break_condition(true)?;
             let mut clear = BreakGuard(Some(self));
-            let start = Instant::now();
-            // tokio's timer ticks in whole milliseconds and wakes late, so it only waits
-            // for the part that close or cancel may need to interrupt.
-            let coarse = duration.saturating_sub(PRECISE_BREAK_TAIL);
-            // Even a zero sleep waits for the timer's next tick.
-            if !coarse.is_zero() {
-                tokio::time::sleep(coarse).await;
-            }
-            let rest = duration.saturating_sub(start.elapsed());
-            tokio::task::spawn_blocking(move || std::thread::sleep(rest))
-                .await
-                .map_err(|err| SerialError::Os {
-                    code: None,
-                    message: err.to_string(),
-                })?;
+            sleep_precisely(duration).await?;
             clear.disarm();
             self.set_break_condition(false)
         })

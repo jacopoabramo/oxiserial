@@ -12,6 +12,7 @@ use pyo3::types::{
 use crate::errors::SerialError;
 use crate::future::{OpFuture, Outcome, WAIT_SLICE};
 use crate::port::PortCore;
+use crate::rs485::{PyRs485, Rs485Arg};
 use crate::runtime::runtime;
 use crate::settings::{self, Parity, Seconds, Settings, StopBits};
 
@@ -316,6 +317,7 @@ impl SerialBase {
         dsrdtr: Option<Truthy>,
         inter_byte_timeout: Option<Seconds>,
         exclusive: Option<Truthy>,
+        rs485: Option<Rs485Arg>,
     ) -> PyResult<()> {
         let settings = Settings {
             baudrate: baudrate.0,
@@ -329,6 +331,7 @@ impl SerialBase {
             rtscts: rtscts.0,
             dsrdtr: dsrdtr.map_or(rtscts.0, |d| d.0),
             exclusive: exclusive.map(|e| e.0),
+            rs485: rs485.and_then(|r| r.0),
         };
         let open_now = port.is_some();
         slf.get().detached(slf.py(), move |core| {
@@ -530,6 +533,21 @@ impl SerialBase {
     #[setter]
     fn set_exclusive(&self, py: Python<'_>, value: Option<Truthy>) -> PyResult<()> {
         self.update(py, move |s| s.exclusive = value.map(|v| v.0))
+    }
+
+    #[getter]
+    fn rs485(&self) -> Option<PyRs485> {
+        self.core.settings().rs485.map(PyRs485)
+    }
+
+    #[setter]
+    fn set_rs485(&self, py: Python<'_>, value: Option<Rs485Arg>) -> PyResult<()> {
+        self.update(py, move |s| s.rs485 = value.and_then(|v| v.0))
+    }
+
+    #[getter]
+    fn rs485_switched_by(&self) -> Option<&'static str> {
+        self.core.rs485_switched_by()
     }
 
     #[getter]
@@ -823,7 +841,8 @@ impl Serial {
         signature = (
             port = None, baudrate = Baudrate(9600), bytesize = Bytesize(8), parity = "N",
             stopbits = 1.0, timeout = None, xonxoff = Truthy(false), rtscts = Truthy(false),
-            write_timeout = None, dsrdtr = Some(Truthy(false)), inter_byte_timeout = None, exclusive = None
+            write_timeout = None, dsrdtr = Some(Truthy(false)), inter_byte_timeout = None, exclusive = None,
+            rs485 = None
         ),
     )]
     #[allow(clippy::too_many_arguments)]
@@ -841,6 +860,7 @@ impl Serial {
         dsrdtr: Option<Truthy>,
         inter_byte_timeout: Option<Seconds>,
         exclusive: Option<Truthy>,
+        rs485: Option<Rs485Arg>,
     ) -> PyResult<()> {
         SerialBase::init(
             slf.as_super(),
@@ -856,6 +876,7 @@ impl Serial {
             dsrdtr,
             inter_byte_timeout,
             exclusive,
+            rs485,
         )
     }
 

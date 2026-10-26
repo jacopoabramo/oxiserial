@@ -3,6 +3,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::errors::SerialError;
 use crate::settings::Settings;
 
+#[cfg(target_os = "linux")]
+mod linux_rs485;
 mod loopback;
 #[cfg(feature = "test-backend")]
 pub mod mock;
@@ -49,6 +51,14 @@ pub trait Backend: AsyncRead + AsyncWrite + Unpin + Send + 'static {
     fn detach_write(&mut self) -> usize {
         0
     }
+
+    /// Whether the driver switches RTS for `settings.rs485` after `configure`.
+    fn rs485_by_driver(&self, _settings: &Settings) -> bool {
+        false
+    }
+
+    /// Turns off a driver RS-485 mode that this port turned on.
+    fn disable_rs485(&mut self) {}
 
     /// Sets the driver's input and output queue sizes; backends without driver queues keep
     /// nothing to size.

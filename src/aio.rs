@@ -6,6 +6,7 @@ use pyo3::types::{PyDict, PyTuple};
 use crate::errors::SerialError;
 use crate::future::{OpFuture, Outcome};
 use crate::port::PortCore;
+use crate::rs485::Rs485Arg;
 use crate::serial::{
     Baudrate, Bytesize, SerialBase, Truthy, expected_bytes, for_url, ops, to_bytes,
 };
@@ -72,7 +73,8 @@ impl AioSerial {
         signature = (
             port = None, baudrate = Baudrate(9600), bytesize = Bytesize(8), parity = "N",
             stopbits = 1.0, timeout = None, xonxoff = Truthy(false), rtscts = Truthy(false),
-            write_timeout = None, dsrdtr = Some(Truthy(false)), inter_byte_timeout = None, exclusive = None
+            write_timeout = None, dsrdtr = Some(Truthy(false)), inter_byte_timeout = None, exclusive = None,
+            rs485 = None
         ),
     )]
     #[allow(clippy::too_many_arguments)]
@@ -90,6 +92,7 @@ impl AioSerial {
         dsrdtr: Option<Truthy>,
         inter_byte_timeout: Option<Seconds>,
         exclusive: Option<Truthy>,
+        rs485: Option<Rs485Arg>,
     ) -> PyResult<()> {
         SerialBase::init(
             slf.as_super(),
@@ -105,6 +108,7 @@ impl AioSerial {
             dsrdtr,
             inter_byte_timeout,
             exclusive,
+            rs485,
         )
     }
 

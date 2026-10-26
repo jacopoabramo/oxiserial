@@ -4,6 +4,11 @@ use serialport::{DataBits, FlowControl, SerialPort};
 #[cfg(unix)]
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
 
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
+
+#[cfg(target_os = "linux")]
+use crate::backend::linux_rs485;
 use crate::backend::{Backend, Drain};
 use crate::errors::SerialError;
 #[cfg(unix)]
@@ -83,7 +88,28 @@ impl Backend for Port {
             self,
             (!settings.rtscts).then_some(rts),
             (!settings.dsrdtr).then_some(dtr),
-        )
+        )?;
+        // A mode the device tree turned on survives ports that never ask for RS-485.
+        #[cfg(target_os = "linux")]
+        if let Some(rs485) = &settings.rs485 {
+            linux_rs485::enable(self.as_raw_fd(), rs485)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn rs485_by_driver(&self, settings: &Settings) -> bool {
+        settings.rs485.is_some() && linux_rs485::enabled(self.as_raw_fd())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn disable_rs485(&mut self) {
+        linux_rs485::disable(self.as_raw_fd());
+    }
+
+    #[cfg(windows)]
+    fn rs485_by_driver(&self, settings: &Settings) -> bool {
+        settings.rs485.is_some() && platform::rts_toggled(self)
     }
 
     fn set_rts(&mut self, level: bool) -> Result<(), SerialError> {
@@ -299,7 +325,7 @@ mod platform {
     };
     use windows_sys::Win32::System::WindowsProgramming::{
         DTR_CONTROL_DISABLE, DTR_CONTROL_ENABLE, DTR_CONTROL_HANDSHAKE, RTS_CONTROL_DISABLE,
-        RTS_CONTROL_ENABLE, RTS_CONTROL_HANDSHAKE,
+        RTS_CONTROL_ENABLE, RTS_CONTROL_HANDSHAKE, RTS_CONTROL_TOGGLE,
     };
 
     use super::Port;
@@ -320,6 +346,24 @@ mod platform {
     const F_RTS_CONTROL_SHIFT: u32 = 12;
     const F_ABORT_ON_ERROR: u32 = 1 << 14;
 
+    fn comm_state(stream: &Port) -> Result<DCB, SerialError> {
+        let mut dcb = DCB {
+            DCBlength: std::mem::size_of::<DCB>() as u32,
+            ..DCB::default()
+        };
+        // SAFETY: the handle is the open COM port owned by `stream`.
+        if unsafe { GetCommState(stream.as_raw_handle(), &mut dcb) } == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(dcb)
+    }
+
+    /// Whether the driver was left raising RTS while it sends.
+    pub fn rts_toggled(stream: &Port) -> bool {
+        comm_state(stream)
+            .is_ok_and(|dcb| dcb._bitfield >> F_RTS_CONTROL_SHIFT & 0b11 == RTS_CONTROL_TOGGLE)
+    }
+
     /// Applies `settings` and the RTS and DTR levels in a single `SetCommState`, so no line
     /// changes level while the port is reconfigured.
     pub fn configure(
@@ -328,15 +372,7 @@ mod platform {
         rts: bool,
         dtr: bool,
     ) -> Result<(), SerialError> {
-        let handle = stream.as_raw_handle();
-        let mut dcb = DCB {
-            DCBlength: std::mem::size_of::<DCB>() as u32,
-            ..DCB::default()
-        };
-        // SAFETY: `handle` is the open COM port owned by `stream`.
-        if unsafe { GetCommState(handle, &mut dcb) } == 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
+        let mut dcb = comm_state(stream)?;
         // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): DCB field and flag choices.
         dcb.BaudRate = settings.baudrate;
         dcb.ByteSize = settings.bytesize;
@@ -359,12 +395,17 @@ mod platform {
         } else {
             DTR_CONTROL_DISABLE
         };
-        let rts_control = if settings.rtscts {
-            RTS_CONTROL_HANDSHAKE
-        } else if rts {
+        let level = if rts {
             RTS_CONTROL_ENABLE
         } else {
             RTS_CONTROL_DISABLE
+        };
+        let rts_control = if settings.rtscts {
+            RTS_CONTROL_HANDSHAKE
+        } else if settings.rs485.is_some_and(|r| r.driver_can_toggle()) {
+            RTS_CONTROL_TOGGLE
+        } else {
+            level
         };
         let mut flags =
             F_BINARY | dtr_control << F_DTR_CONTROL_SHIFT | rts_control << F_RTS_CONTROL_SHIFT;
@@ -395,6 +436,18 @@ mod platform {
         dcb._bitfield = dcb._bitfield & !owned | flags;
         dcb.XonChar = 0x11;
         dcb.XoffChar = 0x13;
+        let handle = stream.as_raw_handle();
+        // SAFETY: the handle is the open COM port owned by `stream`.
+        if unsafe { SetCommState(handle, &dcb) } != 0 {
+            return Ok(());
+        }
+        let refused = std::io::Error::last_os_error();
+        if rts_control != RTS_CONTROL_TOGGLE {
+            return Err(refused.into());
+        }
+        // A driver without RTS toggling gets a fixed level, and oxiserial switches RTS.
+        dcb._bitfield =
+            dcb._bitfield & !(0b11 << F_RTS_CONTROL_SHIFT) | level << F_RTS_CONTROL_SHIFT;
         // SAFETY: as above.
         if unsafe { SetCommState(handle, &dcb) } == 0 {
             return Err(std::io::Error::last_os_error().into());
