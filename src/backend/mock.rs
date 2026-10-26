@@ -4,6 +4,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll, Waker};
+use std::time::Instant;
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -11,6 +12,13 @@ use crate::backend::{Backend, Drain};
 use crate::errors::SerialError;
 use crate::lock;
 use crate::settings::Settings;
+
+/// A change on the line, recorded with the time it happened.
+#[derive(Clone, Copy, Debug)]
+pub enum LineEvent {
+    Rts(bool),
+    Wrote(usize),
+}
 
 /// Control state of one end of a mock pair.
 pub struct EndState {
@@ -27,6 +35,8 @@ pub struct EndState {
     pub line_writes: usize,
     /// Times RTS or DTR was written high.
     pub high_writes: usize,
+    /// RTS changes and completed writes, oldest first.
+    pub events: Vec<(Instant, LineEvent)>,
     write_waker: Option<Waker>,
 }
 
@@ -42,6 +52,7 @@ impl Default for EndState {
             configure_calls: 0,
             line_writes: 0,
             high_writes: 0,
+            events: Vec::new(),
             write_waker: None,
         }
     }
@@ -52,6 +63,7 @@ impl EndState {
         self.rts = level;
         self.line_writes += 1;
         self.high_writes += usize::from(level);
+        self.events.push((Instant::now(), LineEvent::Rts(level)));
     }
 
     fn set_dtr(&mut self, level: bool) {
@@ -189,6 +201,8 @@ impl AsyncWrite for MockPort {
             end.write_waker = Some(cx.waker().clone());
             return Poll::Pending;
         }
+        end.events
+            .push((Instant::now(), LineEvent::Wrote(data.len())));
         state.inbox[peer].extend(data);
         if let Some(waker) = state.read_waker[peer].take() {
             waker.wake();

@@ -1,9 +1,18 @@
 import math
+import threading
+import time
 from typing import Any
 
 import pytest
 
-from oxiserial import RS485, Serial, SerialBase, _testing
+from oxiserial import (
+    RS485,
+    PortNotOpenError,
+    Serial,
+    SerialBase,
+    SerialTimeoutException,
+    _testing,
+)
 from oxiserial.aio import Serial as AioSerial
 
 
@@ -112,4 +121,74 @@ def test_rts_set_during_rs485_applies_when_it_turns_off(
     assert _testing.mock_state(mock_pair[0])["rts"] is False
     port.rs485 = False
     assert _testing.mock_state(mock_pair[0])["rts"] is True
+    port.close()
+
+
+@pytest.mark.parametrize("cls", [Serial, AioSerial])
+def test_a_write_switches_rts_around_the_data(
+    mock_pair: tuple[str, str], cls: type[SerialBase]
+) -> None:
+    """Raise RTS, wait, send, wait and drop RTS, in order, on both classes."""
+    rs485 = RS485(delay_before_tx=0.02, delay_after_tx=0.03)
+    port = cls(mock_pair[0], rs485=rs485)  # type: ignore[call-arg]
+    _testing.mock_take_events(mock_pair[0])
+    result = port.write(b"abc")  # type: ignore[attr-defined]
+    assert (result.wait(2) if cls is AioSerial else result) == 3
+    events = _testing.mock_take_events(mock_pair[0])
+    assert [(kind, value) for _, kind, value in events] == [
+        ("rts", 1),
+        ("write", 3),
+        ("rts", 0),
+    ]
+    (up, _, _), (sent, _, _), (down, _, _) = events
+    assert sent - up >= 0.02
+    assert down - sent >= 0.03
+    port.close()
+
+
+def test_a_timed_out_write_drops_rts(mock_pair: tuple[str, str]) -> None:
+    """Leave RTS at the receive level when a switched write times out."""
+    port = Serial(mock_pair[0], write_timeout=0.05, rs485=True)
+    _testing.mock_block_writes(mock_pair[0], True)
+    with pytest.raises(SerialTimeoutException):
+        port.write(b"abc")
+    assert _testing.mock_state(mock_pair[0])["rts"] is False
+    port.close()
+
+
+def test_a_cancelled_async_write_drops_rts(mock_pair: tuple[str, str]) -> None:
+    """Leave RTS at the receive level when a switched async write is cancelled."""
+    port = AioSerial(mock_pair[0], rs485=True)
+    _testing.mock_block_writes(mock_pair[0], True)
+    future = port.write(b"abc")
+    time.sleep(0.05)
+    assert _testing.mock_state(mock_pair[0])["rts"] is True
+    future.cancel()
+    deadline = time.monotonic() + 2
+    while _testing.mock_state(mock_pair[0])["rts"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert _testing.mock_state(mock_pair[0])["rts"] is False
+    port.close()
+
+
+def test_closing_during_a_switched_write_ends_it(mock_pair: tuple[str, str]) -> None:
+    """End a blocked switched write with PortNotOpenError when the port closes."""
+    port = Serial(mock_pair[0], rs485=True)
+    _testing.mock_block_writes(mock_pair[0], True)
+    closer = threading.Timer(0.05, port.close)
+    closer.start()
+    with pytest.raises(PortNotOpenError):
+        port.write(b"abc")
+    closer.join()
+
+
+def test_a_non_blocking_switched_write_still_drains(
+    mock_pair: tuple[str, str],
+) -> None:
+    """Drop RTS only after the data with write_timeout=0."""
+    port = Serial(mock_pair[0], write_timeout=0, rs485=True)
+    _testing.mock_take_events(mock_pair[0])
+    assert port.write(b"abc") == 3
+    kinds = [kind for _, kind, _ in _testing.mock_take_events(mock_pair[0])]
+    assert kinds == ["rts", "write", "rts"]
     port.close()

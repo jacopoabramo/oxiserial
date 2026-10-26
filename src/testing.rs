@@ -41,6 +41,27 @@ fn mock_state<'py>(py: Python<'py>, port: &str) -> PyResult<Bound<'py, PyDict>> 
     Ok(state)
 }
 
+/// Returns and clears the RTS changes and writes of `port`, as seconds since the first one,
+/// the kind (`"rts"` or `"write"`) and the level or byte count.
+#[pyfunction]
+fn mock_take_events(port: &str) -> PyResult<Vec<(f64, &'static str, usize)>> {
+    let events =
+        mock::update(port, |end| std::mem::take(&mut end.events)).ok_or_else(|| unknown(port))?;
+    let Some(&(first, _)) = events.first() else {
+        return Ok(Vec::new());
+    };
+    Ok(events
+        .into_iter()
+        .map(|(at, event)| {
+            let seconds = at.duration_since(first).as_secs_f64();
+            match event {
+                mock::LineEvent::Rts(level) => (seconds, "rts", usize::from(level)),
+                mock::LineEvent::Wrote(n) => (seconds, "write", n),
+            }
+        })
+        .collect())
+}
+
 #[pyfunction]
 fn delayed(value: &[u8], delay: f64) -> PyResult<OpFuture> {
     let delay = Duration::try_from_secs_f64(delay)
@@ -81,6 +102,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mock_block_writes, m)?)?;
     m.add_function(wrap_pyfunction!(mock_unplug, m)?)?;
     m.add_function(wrap_pyfunction!(mock_state, m)?)?;
+    m.add_function(wrap_pyfunction!(mock_take_events, m)?)?;
     m.add_function(wrap_pyfunction!(delayed, m)?)?;
     m.add_function(wrap_pyfunction!(panic_in_task, m)?)?;
     m.add_function(wrap_pyfunction!(panic_in_call, m)?)?;

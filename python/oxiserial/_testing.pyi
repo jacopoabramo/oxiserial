@@ -7,6 +7,7 @@ __all__ = [
     "mock_block_writes",
     "mock_unplug",
     "mock_state",
+    "mock_take_events",
     "delayed",
     "panic_in_task",
     "panic_in_call",
@@ -39,6 +40,18 @@ def mock_unplug(port: str) -> None:
 
 def mock_state(port: str) -> dict[str, int | bool]:
     """Return the `baudrate`, `rts`, `dtr` and `break` state of a mock port.
+
+    Raises
+    ------
+    ValueError
+        If `port` is not a mock port.
+    """
+
+def mock_take_events(port: str) -> list[tuple[float, str, int]]:
+    """Return and clear the RTS changes and writes of a mock port.
+
+    Each entry is the seconds since the first entry, `"rts"` or `"write"`,
+    and the new RTS level or the number of bytes written.
 
     Raises
     ------
