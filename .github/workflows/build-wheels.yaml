@@ -22,7 +22,7 @@ jobs:
           - runner: ubuntu-22.04
             target: ppc64le
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - &set-version
         name: Set version from tag
         if: startsWith(github.ref, 'refs/tags/v')
@@ -33,7 +33,7 @@ jobs:
           sed -i.bak -E '/^\[package\]/,/^\[/ s/^version = ".*"/version = "'"$v"'"/' Cargo.toml
           rm Cargo.toml.bak
           cargo update --workspace
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Build wheels
@@ -44,7 +44,7 @@ jobs:
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: auto
       - name: Upload wheels
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-linux-${{ matrix.platform.target }}
           path: dist
@@ -63,9 +63,9 @@ jobs:
           - runner: ubuntu-22.04
             target: armv7
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - *set-version
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - name: Build wheels
@@ -76,7 +76,7 @@ jobs:
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: musllinux_1_2
       - name: Upload wheels
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-musllinux-${{ matrix.platform.target }}
           path: dist
@@ -96,14 +96,14 @@ jobs:
             target: aarch64
             python_arch: arm64
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - *set-version
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         id: py311
         with:
           python-version: "3.11"
           architecture: ${{ matrix.platform.python_arch }}
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         id: py314t
         with:
           python-version: "3.14t"
@@ -115,7 +115,7 @@ jobs:
           args: --release --out dist -i ${{ steps.py311.outputs.python-path }} -i ${{ steps.py314t.outputs.python-path }}
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - name: Upload wheels
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-windows-${{ matrix.platform.target }}
           path: dist
@@ -130,13 +130,13 @@ jobs:
           - runner: macos-latest
             target: aarch64
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - *set-version
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         id: py311
         with:
           python-version: "3.11"
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         id: py314t
         with:
           python-version: "3.14t"
@@ -147,7 +147,7 @@ jobs:
           args: --release --out dist -i ${{ steps.py311.outputs.python-path }} -i ${{ steps.py314t.outputs.python-path }}
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - name: Upload wheels
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-macos-${{ matrix.platform.target }}
           path: dist
@@ -156,7 +156,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - *set-version
       - name: Build sdist
         uses: PyO3/maturin-action@v1
@@ -164,7 +164,7 @@ jobs:
           command: sdist
           args: --out dist
       - name: Upload sdist
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-sdist
           path: dist
