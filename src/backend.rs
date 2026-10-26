@@ -3,6 +3,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::errors::SerialError;
 use crate::settings::Settings;
 
+#[cfg(target_os = "linux")]
+mod linux_rs485;
 mod loopback;
 #[cfg(feature = "test-backend")]
 pub mod mock;

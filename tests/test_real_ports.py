@@ -122,6 +122,18 @@ def test_a_non_blocking_write_held_by_flow_control_is_sent_later(
             assert b.read(100) == b"x" * 100
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="the socat pty refuses TIOCSRS485 on Linux"
+)
+def test_a_pty_falls_back_to_switching_in_oxiserial(
+    real_pair: tuple[str, str],
+) -> None:
+    """Switch RTS in oxiserial when the driver refuses the kernel RS-485 mode."""
+    with Serial(real_pair[0], rs485=True) as port:
+        assert port.rs485_switched_by == "oxiserial"
+        assert port.write(b"x") == 1
+
+
 def test_an_async_write_outlives_the_thread_that_started_it(
     modem_pair: tuple[str, str],
 ) -> None:

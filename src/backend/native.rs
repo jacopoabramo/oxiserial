@@ -4,6 +4,11 @@ use serialport::{DataBits, FlowControl, SerialPort};
 #[cfg(unix)]
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
 
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
+
+#[cfg(target_os = "linux")]
+use crate::backend::linux_rs485;
 use crate::backend::{Backend, Drain};
 use crate::errors::SerialError;
 #[cfg(unix)]
@@ -83,7 +88,23 @@ impl Backend for Port {
             self,
             (!settings.rtscts).then_some(rts),
             (!settings.dsrdtr).then_some(dtr),
-        )
+        )?;
+        // A mode the device tree turned on survives ports that never ask for RS-485.
+        #[cfg(target_os = "linux")]
+        if let Some(rs485) = &settings.rs485 {
+            linux_rs485::enable(self.as_raw_fd(), rs485)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn rs485_by_driver(&self, settings: &Settings) -> bool {
+        settings.rs485.is_some() && linux_rs485::enabled(self.as_raw_fd())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn disable_rs485(&mut self) {
+        linux_rs485::disable(self.as_raw_fd());
     }
 
     fn set_rts(&mut self, level: bool) -> Result<(), SerialError> {

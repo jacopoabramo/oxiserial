@@ -22,7 +22,9 @@ that can be waited on (`.wait()`) or awaited.
 - Code or text taken from pyserial gets a one-line comment saying so; the
   notice is in `LICENSES/pyserial.txt`.
 - OS access goes through crates (`serialport`, `tokio-serial`, and `nix` or
-  `windows-sys` for what those lack). No hand-written FFI.
+  `windows-sys` for what those lack). No hand-written FFI, except a kernel
+  struct that `libc` lacks, declared with the header it comes from named in
+  a comment.
 - Every item exposed to Python has a matching stub entry; `stubtest` checks
   they agree.
 - Blocking calls release the GIL. Shared state is behind a `Mutex` or
