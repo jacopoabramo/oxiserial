@@ -1,5 +1,7 @@
 """Test-only mock ports and helpers."""
 
+from typing import Literal
+
 from oxiserial.aio import Future
 
 __all__ = [
@@ -7,6 +9,8 @@ __all__ = [
     "mock_block_writes",
     "mock_unplug",
     "mock_state",
+    "mock_driver_rs485",
+    "mock_fail_next",
     "mock_take_events",
     "delayed",
     "panic_in_task",
@@ -39,12 +43,32 @@ def mock_unplug(port: str) -> None:
     """
 
 def mock_state(port: str) -> dict[str, int | bool]:
-    """Return the `baudrate`, `rts`, `dtr` and `break` state of a mock port.
+    """Return the `baudrate`, `rts`, `dtr`, `break` and `rs485_on` state of a mock port.
+
+    `rs485_on` is whether the driver's RS-485 mode is on.
 
     Raises
     ------
     ValueError
         If `port` is not a mock port.
+    """
+
+def mock_driver_rs485(port: str, enabled: bool) -> None:
+    """Give the mock port `port` a driver that switches RTS when `rs485` is set.
+
+    Raises
+    ------
+    ValueError
+        If `port` is not a mock port.
+    """
+
+def mock_fail_next(port: str, operation: Literal["configure", "clear_buffers"]) -> None:
+    """Make the next call of `operation` on the mock port `port` fail with an OS error.
+
+    Raises
+    ------
+    ValueError
+        If `port` is not a mock port, or `operation` is not one of the two.
     """
 
 def mock_take_events(port: str) -> list[tuple[float, str, int]]:

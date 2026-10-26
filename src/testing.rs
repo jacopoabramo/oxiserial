@@ -29,15 +29,33 @@ fn mock_block_writes(port: &str, blocked: bool) -> PyResult<()> {
 }
 
 #[pyfunction]
+fn mock_driver_rs485(port: &str, enabled: bool) -> PyResult<()> {
+    mock::update(port, |end| end.driver_rs485 = enabled).ok_or_else(|| unknown(port))
+}
+
+#[pyfunction]
+fn mock_fail_next(port: &str, operation: &str) -> PyResult<()> {
+    if !matches!(operation, "configure" | "clear_buffers") {
+        return Err(PyValueError::new_err(format!(
+            "unknown mock operation: {operation}"
+        )));
+    }
+    mock::update(port, |end| end.fail_next = Some(operation.to_owned()))
+        .ok_or_else(|| unknown(port))
+}
+
+#[pyfunction]
 fn mock_state<'py>(py: Python<'py>, port: &str) -> PyResult<Bound<'py, PyDict>> {
-    let (baudrate, rts, dtr, break_on) =
-        mock::update(port, |end| (end.baudrate, end.rts, end.dtr, end.break_on))
-            .ok_or_else(|| unknown(port))?;
+    let (baudrate, rts, dtr, break_on, rs485_on) = mock::update(port, |end| {
+        (end.baudrate, end.rts, end.dtr, end.break_on, end.rs485_on)
+    })
+    .ok_or_else(|| unknown(port))?;
     let state = PyDict::new(py);
     state.set_item("baudrate", baudrate)?;
     state.set_item("rts", rts)?;
     state.set_item("dtr", dtr)?;
     state.set_item("break", break_on)?;
+    state.set_item("rs485_on", rs485_on)?;
     Ok(state)
 }
 
@@ -102,6 +120,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mock_block_writes, m)?)?;
     m.add_function(wrap_pyfunction!(mock_unplug, m)?)?;
     m.add_function(wrap_pyfunction!(mock_state, m)?)?;
+    m.add_function(wrap_pyfunction!(mock_driver_rs485, m)?)?;
+    m.add_function(wrap_pyfunction!(mock_fail_next, m)?)?;
     m.add_function(wrap_pyfunction!(mock_take_events, m)?)?;
     m.add_function(wrap_pyfunction!(delayed, m)?)?;
     m.add_function(wrap_pyfunction!(panic_in_task, m)?)?;

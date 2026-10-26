@@ -10,6 +10,7 @@ from oxiserial import (
     PortNotOpenError,
     Serial,
     SerialBase,
+    SerialException,
     SerialTimeoutException,
     _testing,
 )
@@ -191,4 +192,69 @@ def test_a_non_blocking_switched_write_still_drains(
     assert port.write(b"abc") == 3
     kinds = [kind for _, kind, _ in _testing.mock_take_events(mock_pair[0])]
     assert kinds == ["rts", "write", "rts"]
+    port.close()
+
+
+def wait_for_rts(port: str, level: bool) -> None:
+    deadline = time.monotonic() + 2
+    while _testing.mock_state(port)["rts"] is not level:
+        assert time.monotonic() < deadline, f"RTS never went {level}"
+        time.sleep(0.01)
+
+
+def test_a_settings_change_during_a_switched_write_keeps_rts_up(
+    mock_pair: tuple[str, str],
+) -> None:
+    """Keep RTS at the send level through a baud rate change made mid-write."""
+    port = Serial(mock_pair[0], rs485=True)
+    _testing.mock_block_writes(mock_pair[0], True)
+    writer = threading.Thread(target=port.write, args=(b"abc",), daemon=True)
+    writer.start()
+    wait_for_rts(mock_pair[0], True)
+    port.baudrate = 19200
+    assert _testing.mock_state(mock_pair[0])["rts"] is True
+    _testing.mock_block_writes(mock_pair[0], False)
+    writer.join()
+    assert _testing.mock_state(mock_pair[0])["rts"] is False
+    port.close()
+
+
+def test_turning_rs485_off_during_a_write_keeps_the_stored_rts(
+    mock_pair: tuple[str, str],
+) -> None:
+    """Leave RTS at the stored level when RS-485 is turned off mid-write."""
+    port = Serial(mock_pair[0], rs485=True)
+    port.rts = True
+    _testing.mock_block_writes(mock_pair[0], True)
+    writer = threading.Thread(target=port.write, args=(b"abc",), daemon=True)
+    writer.start()
+    wait_for_rts(mock_pair[0], True)
+    port.rs485 = False
+    _testing.mock_block_writes(mock_pair[0], False)
+    writer.join()
+    assert port.rts is True
+    assert _testing.mock_state(mock_pair[0])["rts"] is True
+    port.close()
+
+
+def test_a_failed_open_turns_the_driver_mode_off(mock_pair: tuple[str, str]) -> None:
+    """Turn the driver's RS-485 mode off again when opening fails after enabling it."""
+    _testing.mock_driver_rs485(mock_pair[0], True)
+    _testing.mock_fail_next(mock_pair[0], "clear_buffers")
+    with pytest.raises(SerialException):
+        Serial(mock_pair[0], rs485=True)
+    assert _testing.mock_state(mock_pair[0])["rs485_on"] is False
+
+
+def test_a_failed_change_keeps_the_driver_mode(mock_pair: tuple[str, str]) -> None:
+    """Restore the driver's RS-485 mode when turning it off fails to configure."""
+    _testing.mock_driver_rs485(mock_pair[0], True)
+    port = Serial(mock_pair[0], rs485=True)
+    assert port.rs485_switched_by == "driver"
+    _testing.mock_fail_next(mock_pair[0], "configure")
+    with pytest.raises(SerialException):
+        port.rs485 = False
+    assert port.rs485 == RS485()
+    assert port.rs485_switched_by == "driver"
+    assert _testing.mock_state(mock_pair[0])["rs485_on"] is True
     port.close()

@@ -23,12 +23,18 @@ struct State {
     break_on: bool,
     /// Whether the driver of the open port switches RTS for `settings.rs485`.
     rs485_by_driver: bool,
+    /// Whether oxiserial holds RTS at the send level for a switched RS-485 write.
+    sending: bool,
 }
 
 impl State {
-    /// The RTS level the port is configured with: the receive level while RS-485 is on.
+    /// The RTS level the port is configured with: the RS-485 level while RS-485 is on.
     fn configured_rts(&self) -> bool {
-        self.settings.rs485.map_or(self.rts, |r| r.rts_while_rx)
+        match self.settings.rs485 {
+            Some(rs485) if self.sending => rs485.rts_while_tx,
+            Some(rs485) => rs485.rts_while_rx,
+            None => self.rts,
+        }
     }
 }
 
@@ -69,8 +75,8 @@ async fn sleep_precisely(duration: Duration) -> Result<(), SerialError> {
         })
 }
 
-/// Sets RTS back to its receive level when a switched RS-485 write ends early.
-struct RtsGuard<'a>(Option<(&'a PortCore, bool)>);
+/// Ends a switched RS-485 write that stops early.
+struct RtsGuard<'a>(Option<&'a PortCore>);
 
 impl RtsGuard<'_> {
     fn disarm(&mut self) {
@@ -80,9 +86,9 @@ impl RtsGuard<'_> {
 
 impl Drop for RtsGuard<'_> {
     fn drop(&mut self) {
-        if let Some((core, level)) = self.0 {
+        if let Some(core) = self.0 {
             // A transceiver left sending blocks the bus; a closed port has nothing to restore.
-            let _ = core.with_backend(|port| port.set_rts(level));
+            let _ = core.end_sending();
         }
     }
 }
@@ -152,6 +158,7 @@ impl PortCore {
                 dtr: true,
                 break_on: false,
                 rs485_by_driver: false,
+                sending: false,
             }),
             backend: Mutex::new(None),
             read_turn: tokio::sync::Mutex::new(()),
@@ -204,8 +211,16 @@ impl PortCore {
         }
         // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): open order.
         let mut opened = backend::open(&port, &settings, rts, dtr)?;
-        self.check_rs485(opened.as_mut(), &settings)?;
-        opened.clear_buffers(true, false)?;
+        let ready = self
+            .check_rs485(opened.as_mut(), &settings)
+            .and_then(|()| opened.clear_buffers(true, false));
+        if let Err(err) = ready {
+            // The driver keeps its RS-485 mode after the port is dropped.
+            if std::mem::take(&mut lock(&self.state).rs485_by_driver) {
+                opened.disable_rs485();
+            }
+            return Err(err);
+        }
         *slot = Some(opened);
         Ok(())
     }
@@ -291,22 +306,20 @@ impl PortCore {
                 if settings.rs485.is_none() && lock(&self.state).rs485_by_driver {
                     port.disable_rs485();
                 }
-                if let Err(err) = port.configure(&settings, rts, dtr) {
-                    lock(&self.state).settings = before;
-                    return Err(err);
-                }
-                let checked = self.check_rs485(port.as_mut(), &settings);
-                if checked.is_err() {
+                let applied = port
+                    .configure(&settings, rts, dtr)
+                    .and_then(|()| self.check_rs485(port.as_mut(), &settings));
+                if applied.is_err() {
                     let (rts, dtr) = {
                         let mut state = lock(&self.state);
                         state.settings = before.clone();
                         (state.configured_rts(), state.dtr)
                     };
-                    // The port took the rejected settings, so it gets the stored ones back.
+                    // The port may hold part of the rejected settings, so it gets the stored ones back.
                     port.configure(&before, rts, dtr)?;
                     self.check_rs485(port.as_mut(), &before)?;
                 }
-                checked
+                applied
             }
             _ => Ok(()),
         }
@@ -325,8 +338,8 @@ impl PortCore {
                 "loopback needs a driver that switches RTS".into(),
             ));
         }
-        // configure() ignores a missing line, so writing the receive level again is the probe.
-        let probed = port.set_rts(rs485.rts_while_rx);
+        // configure() ignores a missing line, so writing the configured level again is the probe.
+        let probed = port.set_rts(lock(&self.state).configured_rts());
         #[cfg(unix)]
         if let Err(SerialError::Os {
             code: Some(libc::ENOTTY | libc::EINVAL),
@@ -513,15 +526,22 @@ impl PortCore {
             let Some(rs485) = self.software_rs485() else {
                 return self.send(data, ignore_timeout).await;
             };
-            self.with_backend(|port| port.set_rts(rs485.rts_while_tx))?;
-            let mut restore = RtsGuard(Some((self, rs485.rts_while_rx)));
+            let mut restore = RtsGuard(Some(self));
+            self.with_backend(|port| {
+                let level = {
+                    let mut state = lock(&self.state);
+                    state.sending = true;
+                    state.configured_rts()
+                };
+                port.set_rts(level)
+            })?;
             sleep_precisely(rs485.delay_before_tx).await?;
             let sent = self.send(data, ignore_timeout).await?;
             // RTS stays up until the last byte has left the OS, even for a non-blocking write.
             self.drain().await?;
             sleep_precisely(rs485.delay_after_tx).await?;
             restore.disarm();
-            self.with_backend(|port| port.set_rts(rs485.rts_while_rx))?;
+            self.end_sending()?;
             Ok(sent)
         })
         .await
@@ -574,6 +594,17 @@ impl PortCore {
     }
 
     /// The RS-485 setting when it is on and the driver does not switch RTS.
+    /// Sets RTS to the level the current settings ask for once a switched write is over.
+    fn end_sending(&self) -> Result<(), SerialError> {
+        let mut slot = lock(&self.backend);
+        let level = {
+            let mut state = lock(&self.state);
+            state.sending = false;
+            state.configured_rts()
+        };
+        slot.as_mut().ok_or(SerialError::NotOpen)?.set_rts(level)
+    }
+
     fn software_rs485(&self) -> Option<Rs485> {
         let state = lock(&self.state);
         state.settings.rs485.filter(|_| !state.rs485_by_driver)

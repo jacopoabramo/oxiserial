@@ -37,6 +37,12 @@ pub struct EndState {
     pub high_writes: usize,
     /// RTS changes and completed writes, oldest first.
     pub events: Vec<(Instant, LineEvent)>,
+    /// Whether the driver has an RS-485 mode, as the kernel's on Linux.
+    pub driver_rs485: bool,
+    /// Whether that mode is on.
+    pub rs485_on: bool,
+    /// An operation (`"configure"` or `"clear_buffers"`) whose next call fails.
+    pub fail_next: Option<String>,
     write_waker: Option<Waker>,
 }
 
@@ -53,6 +59,9 @@ impl Default for EndState {
             line_writes: 0,
             high_writes: 0,
             events: Vec::new(),
+            driver_rs485: false,
+            rs485_on: false,
+            fail_next: None,
             write_waker: None,
         }
     }
@@ -70,6 +79,18 @@ impl EndState {
         self.dtr = level;
         self.line_writes += 1;
         self.high_writes += usize::from(level);
+    }
+
+    /// Fails with an OS error if `operation` was set to fail next.
+    fn check_failure(&mut self, operation: &str) -> Result<(), SerialError> {
+        if self.fail_next.as_deref() == Some(operation) {
+            self.fail_next = None;
+            return Err(SerialError::Os {
+                code: None,
+                message: format!("mock {operation} failed"),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -228,11 +249,23 @@ impl Backend for MockPort {
         }
         let mut state = lock(&self.pair);
         let end = &mut state.ends[self.side];
+        end.check_failure("configure")?;
         end.baudrate = settings.baudrate;
         end.configure_calls += 1;
         end.set_rts(rts);
         end.set_dtr(dtr);
+        if settings.rs485.is_some() && end.driver_rs485 {
+            end.rs485_on = true;
+        }
         Ok(())
+    }
+
+    fn rs485_by_driver(&self, settings: &Settings) -> bool {
+        settings.rs485.is_some() && lock(&self.pair).ends[self.side].rs485_on
+    }
+
+    fn disable_rs485(&mut self) {
+        lock(&self.pair).ends[self.side].rs485_on = false;
     }
 
     fn set_rts(&mut self, level: bool) -> Result<(), SerialError> {
@@ -270,8 +303,10 @@ impl Backend for MockPort {
     }
 
     fn clear_buffers(&self, input: bool, _output: bool) -> Result<(), SerialError> {
+        let mut state = lock(&self.pair);
+        state.ends[self.side].check_failure("clear_buffers")?;
         if input {
-            lock(&self.pair).inbox[self.side].clear();
+            state.inbox[self.side].clear();
         }
         Ok(())
     }
