@@ -3,7 +3,7 @@
 import sys
 from collections.abc import Iterable, Iterator, Mapping
 from enum import IntEnum
-from typing import Any, ClassVar, Final, Self
+from typing import Any, ClassVar, Final, Self, final
 
 from typing_extensions import Buffer, disjoint_base
 
@@ -73,6 +73,51 @@ class SerialTimeoutException(SerialException):
 
 class PortNotOpenError(SerialException):
     """Raised when an operation needs an open port and the port is closed."""
+
+@final
+class RS485:
+    """How RTS drives an RS-485 transceiver around each write.
+
+    Parameters
+    ----------
+    rts_while_tx
+        RTS level while bytes go out.
+    rts_while_rx
+        RTS level the rest of the time.
+    delay_before_tx
+        Seconds between raising RTS and the first byte.
+    delay_after_tx
+        Seconds between the last byte and dropping RTS.
+    loopback
+        Keep the receiver on while sending.
+
+    Raises
+    ------
+    ValueError
+        If a delay is negative, infinite or NaN.
+    """
+
+    def __new__(
+        cls,
+        *,
+        rts_while_tx: bool = True,
+        rts_while_rx: bool = False,
+        delay_before_tx: float = 0.0,
+        delay_after_tx: float = 0.0,
+        loopback: bool = False,
+    ) -> Self: ...
+    @property
+    def rts_while_tx(self) -> bool: ...
+    @property
+    def rts_while_rx(self) -> bool: ...
+    @property
+    def delay_before_tx(self) -> float: ...
+    @property
+    def delay_after_tx(self) -> float: ...
+    @property
+    def loopback(self) -> bool: ...
+    def __eq__(self, other: object, /) -> bool: ...
+    def __hash__(self) -> int: ...
 
 @disjoint_base
 class SerialBase:

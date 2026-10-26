@@ -81,6 +81,38 @@ impl From<f64> for Seconds {
     }
 }
 
+/// How RTS drives an RS-485 transceiver around each write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Rs485 {
+    pub rts_while_tx: bool,
+    pub rts_while_rx: bool,
+    /// Between raising RTS and the first byte.
+    pub delay_before_tx: Duration,
+    /// Between the last byte and dropping RTS.
+    pub delay_after_tx: Duration,
+    /// The receiver stays on while sending.
+    pub loopback: bool,
+}
+
+impl Default for Rs485 {
+    fn default() -> Self {
+        Self {
+            rts_while_tx: true,
+            rts_while_rx: false,
+            delay_before_tx: Duration::ZERO,
+            delay_after_tx: Duration::ZERO,
+            loopback: false,
+        }
+    }
+}
+
+impl Rs485 {
+    /// Whether a driver that only raises RTS while sending can do what this asks.
+    pub fn driver_can_toggle(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 /// Port configuration, with pyserial's defaults.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {

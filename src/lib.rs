@@ -4,6 +4,7 @@ mod errors;
 mod future;
 mod list_ports;
 mod port;
+mod rs485;
 mod runtime;
 mod serial;
 mod settings;
@@ -80,6 +81,7 @@ fn _oxiserial(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("Baudrate", serial::baudrate_enum(py)?)?;
     m.add_class::<serial::SerialBase>()?;
     m.add_class::<serial::Serial>()?;
+    m.add_class::<rs485::PyRs485>()?;
     m.add_function(wrap_pyfunction!(serial::serial_for_url, m)?)?;
     m.add_function(wrap_pyfunction!(serial::public_to_bytes, m)?)?;
 
