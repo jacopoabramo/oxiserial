@@ -75,7 +75,45 @@ dev = [
     "pytest-timeout>=2.4.0",
     "rsloop>=0.1.53",
     "ruff>=0.17.2",
+    "towncrier>=26.9.0",
 ]
 rsloop = [
     "rsloop>=0.1.53",
 ]
+
+[tool.towncrier]
+directory = "changelog.d"
+filename = "CHANGELOG.md"
+start_string = "<!-- towncrier release notes start -->\n"
+title_format = "## [{version}](https://github.com/jacopoabramo/oxiserial/releases/tag/v{version}) - {project_date}"
+issue_format = "[#{issue}](https://github.com/jacopoabramo/oxiserial/pull/{issue})"
+# set, even empty, so a misnamed entry fails the build instead of being skipped
+ignore = []
+
+[[tool.towncrier.type]]
+directory = "breaking"
+name = "Breaking"
+
+[[tool.towncrier.type]]
+directory = "added"
+name = "Added"
+
+[[tool.towncrier.type]]
+directory = "changed"
+name = "Changed"
+
+[[tool.towncrier.type]]
+directory = "deprecated"
+name = "Deprecated"
+
+[[tool.towncrier.type]]
+directory = "removed"
+name = "Removed"
+
+[[tool.towncrier.type]]
+directory = "fixed"
+name = "Fixed"
+
+[[tool.towncrier.type]]
+directory = "security"
+name = "Security"
