@@ -11,23 +11,26 @@ name = "oxiserial"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.29", features = ["abi3-py311"] }
-serialport = { version = "4.10", default-features = false, features = ["usbportinfo-location"] }
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "time", "sync", "macros"] }
+pyo3 = { version = "0.30.1", features = ["abi3-py311"] }
+serialport = { version = "4.10.1", default-features = false, features = ["usbportinfo-location"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "time", "sync", "macros"] }
 
 [target."cfg(unix)".dependencies]
-libc = "0.2.189"
-nix = { version = "0.31", features = ["ioctl", "term"] }
+libc = "0.2.191"
+nix = { version = "0.31.3", features = ["ioctl", "term"] }
 tokio-serial = "5.5"
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Devices_Communication", "Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading", "Win32_System_WindowsProgramming"] }
 
 [dev-dependencies]
-tokio = { version = "1.53.1", features = ["test-util", "macros", "rt", "io-util"] }
+tokio = { version = "1.54.1", features = ["test-util", "macros", "rt", "io-util"] }
 
 [features]
 test-backend = []
+# Only the free-threaded 3.15 build turns this on: with it, maturin tags the
+# abi3 build for 3.11 as a cp311 wheel.
+abi3t = ["pyo3/abi3t-py315"]
 
 [lints.clippy]
 unwrap_used = "deny"

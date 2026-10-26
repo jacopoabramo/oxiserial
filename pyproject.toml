@@ -15,6 +15,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Programming Language :: Python :: Free Threading :: 2 - Beta",
     "Typing :: Typed",
 ]
@@ -69,11 +70,11 @@ bench = [
 ]
 dev = [
     "maturin>=1.15.0",
-    "mypy>=2.3.1",
+    "mypy>=2.4.0",
     "pytest>=9.1.1",
     "pytest-timeout>=2.4.0",
     "rsloop>=0.1.53",
-    "ruff>=0.16.9",
+    "ruff>=0.17.2",
 ]
 rsloop = [
     "rsloop>=0.1.53",
