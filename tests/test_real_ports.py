@@ -4,6 +4,7 @@ import threading
 import time
 
 import pytest
+import serial
 
 from conftest import Runner
 from oxiserial import Serial, SerialException
@@ -120,6 +121,43 @@ def test_a_non_blocking_write_held_by_flow_control_is_sent_later(
             assert a.write(b"x" * 100) == 100
             b.rts = True
             assert b.read(100) == b"x" * 100
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="PurgeComm aborts a pending WriteFile on Windows only",
+)
+def test_an_output_reset_ends_a_blocked_write_as_pyserial(
+    real_pair: tuple[str, str],
+) -> None:
+    """Return the bytes sent when reset_output_buffer aborts a write, as pyserial."""
+    size = 200_000
+
+    def write_then_reset(port: Serial | serial.Serial) -> int | None | Exception:
+        results: list[int | None | Exception] = []
+
+        def write() -> None:
+            try:
+                results.append(port.write(bytes(size)))
+            except Exception as err:
+                results.append(err)
+
+        writer = threading.Thread(target=write)
+        writer.start()
+        time.sleep(0.3)
+        port.reset_output_buffer()
+        writer.join(10)
+        return results[0]
+
+    with (
+        Serial(real_pair[1]),
+        serial.Serial(real_pair[0], write_timeout=5) as reference,
+    ):
+        theirs = write_then_reset(reference)
+    with Serial(real_pair[1]), Serial(real_pair[0], write_timeout=5) as port:
+        ours = write_then_reset(port)
+    assert isinstance(theirs, int) and 0 < theirs < size, theirs
+    assert isinstance(ours, int) and 0 < ours < size, ours
 
 
 def test_an_async_write_outlives_the_thread_that_started_it(
