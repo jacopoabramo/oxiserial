@@ -546,8 +546,8 @@ impl SerialBase {
     }
 
     #[getter]
-    fn rs485_switched_by(&self) -> Option<&'static str> {
-        self.core.rs485_switched_by()
+    fn rs485_switched_by(&self, py: Python<'_>) -> Option<&'static str> {
+        py.detach(|| self.core.rs485_switched_by())
     }
 
     #[getter]
