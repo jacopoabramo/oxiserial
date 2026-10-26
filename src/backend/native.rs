@@ -107,6 +107,11 @@ impl Backend for Port {
         linux_rs485::disable(self.as_raw_fd());
     }
 
+    #[cfg(windows)]
+    fn rs485_by_driver(&self, settings: &Settings) -> bool {
+        platform::driver_toggles_rts(settings)
+    }
+
     fn set_rts(&mut self, level: bool) -> Result<(), SerialError> {
         Ok(self.write_request_to_send(level)?)
     }
@@ -320,7 +325,7 @@ mod platform {
     };
     use windows_sys::Win32::System::WindowsProgramming::{
         DTR_CONTROL_DISABLE, DTR_CONTROL_ENABLE, DTR_CONTROL_HANDSHAKE, RTS_CONTROL_DISABLE,
-        RTS_CONTROL_ENABLE, RTS_CONTROL_HANDSHAKE,
+        RTS_CONTROL_ENABLE, RTS_CONTROL_HANDSHAKE, RTS_CONTROL_TOGGLE,
     };
 
     use super::Port;
@@ -340,6 +345,11 @@ mod platform {
     const F_NULL: u32 = 1 << 11;
     const F_RTS_CONTROL_SHIFT: u32 = 12;
     const F_ABORT_ON_ERROR: u32 = 1 << 14;
+
+    /// Whether the driver raises RTS while it sends, which covers RS-485 with the default fields.
+    pub fn driver_toggles_rts(settings: &Settings) -> bool {
+        settings.rs485.is_some_and(|r| r.driver_can_toggle())
+    }
 
     /// Applies `settings` and the RTS and DTR levels in a single `SetCommState`, so no line
     /// changes level while the port is reconfigured.
@@ -382,6 +392,8 @@ mod platform {
         };
         let rts_control = if settings.rtscts {
             RTS_CONTROL_HANDSHAKE
+        } else if driver_toggles_rts(settings) {
+            RTS_CONTROL_TOGGLE
         } else if rts {
             RTS_CONTROL_ENABLE
         } else {

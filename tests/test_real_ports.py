@@ -6,7 +6,7 @@ import time
 import pytest
 
 from conftest import Runner
-from oxiserial import Serial, SerialException
+from oxiserial import RS485, Serial, SerialException
 from oxiserial import aio as serial_asyncio
 from oxiserial.aio import Serial as AioSerial
 
@@ -132,6 +132,18 @@ def test_a_pty_falls_back_to_switching_in_oxiserial(
     with Serial(real_pair[0], rs485=True) as port:
         assert port.rs485_switched_by == "oxiserial"
         assert port.write(b"x") == 1
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="RTS_CONTROL_TOGGLE is a Windows DCB setting"
+)
+def test_windows_hands_plain_rs485_to_the_driver(real_pair: tuple[str, str]) -> None:
+    """Let the driver toggle RTS for default fields, and oxiserial otherwise."""
+    with Serial(real_pair[0], rs485=True) as port:
+        seen = [port.rs485_switched_by]
+        port.rs485 = RS485(delay_after_tx=0.002)
+        seen.append(port.rs485_switched_by)
+    assert seen == ["driver", "oxiserial"]
 
 
 def test_an_async_write_outlives_the_thread_that_started_it(
