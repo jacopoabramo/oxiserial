@@ -176,7 +176,7 @@ impl PortCore {
 
     /// Drops a read cancel that no read has taken yet.
     pub fn discard_read_cancel(&self) {
-        // Polled to completion: dropping a `Notified` that took the permit would store it again.
+        // Polled once, since a `Notified` that is never polled leaves the stored permit in place.
         let notified = std::pin::pin!(self.read_cancel.notified());
         // Ready means it took the pending cancel; Pending, that there was none.
         let _ = notified.poll(&mut Context::from_waker(std::task::Waker::noop()));

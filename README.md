@@ -140,6 +140,12 @@ description or hwid matches `regexp`, ignoring case.
 ## Differences from pyserial
 
 - `write()` also accepts `str` and sends it as UTF-8.
+- `read_until()` takes `expected=None` as a newline and matches a `str`
+  as UTF-8. pyserial raises `TypeError` for `None` and never matches a
+  `str`.
+- On Windows with `write_timeout=0`, a second write made while the first
+  is still pending returns 0 and sends nothing, and `flush()` raises the
+  error of a pending write that failed.
 - pyserial's deprecated camelCase methods (`inWaiting()`, `setRTS()`, ...)
   are not provided; use the properties (`in_waiting`, `rts`, ...).
 - `serial_for_url` accepts device names and `loop://`; other URLs, such as
