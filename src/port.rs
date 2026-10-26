@@ -633,7 +633,8 @@ impl PortCore {
             Drain::PollOutWaiting => {
                 poll_fn(|cx| self.poll_flush_some(cx)).await?;
                 while self.out_waiting()? > 0 {
-                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    // tokio's timer wakes on the OS tick, often 15.6 ms, which holds RS-485 RTS up.
+                    sleep_precisely(Duration::from_millis(1)).await?;
                 }
                 Ok(())
             }
