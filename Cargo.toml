@@ -28,6 +28,9 @@ tokio = { version = "1.54.1", features = ["test-util", "macros", "rt", "io-util"
 
 [features]
 test-backend = []
+# Only the free-threaded 3.15 build turns this on: with it, maturin tags the
+# abi3 build for 3.11 as a cp311 wheel.
+abi3t = ["pyo3/abi3t-py315"]
 
 [lints.clippy]
 unwrap_used = "deny"
