@@ -123,14 +123,16 @@ def test_a_non_blocking_write_held_by_flow_control_is_sent_later(
 
 
 @pytest.mark.skipif(
-    sys.platform != "linux", reason="the socat pty refuses TIOCSRS485 on Linux"
+    sys.platform != "linux", reason="the pty pair comes from socat on Linux"
 )
-def test_a_pty_falls_back_to_switching_in_oxiserial(
-    real_pair: tuple[str, str],
-) -> None:
-    """Switch RTS in oxiserial when the driver refuses the kernel RS-485 mode."""
-    with Serial(real_pair[0], rs485=True) as port:
-        assert port.rs485_switched_by == "oxiserial"
+def test_rs485_refuses_a_port_without_an_rts_line(real_pair: tuple[str, str]) -> None:
+    """Raise ValueError at open and on assignment for a pty, which has no RTS line."""
+    with pytest.raises(ValueError, match="RTS line"):
+        Serial(real_pair[0], rs485=True)
+    with Serial(real_pair[0]) as port:
+        with pytest.raises(ValueError, match="RTS line"):
+            port.rs485 = True
+        assert port.rs485 is None
         assert port.write(b"x") == 1
 
 

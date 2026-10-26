@@ -243,8 +243,8 @@ class SerialBase:
         TypeError
             If the value is not a bool, an `RS485` or `None`.
         ValueError
-            If `rtscts` is on, or if `loopback` is asked for where oxiserial
-            switches RTS.
+            If `rtscts` is on. Where oxiserial switches RTS, also if `loopback`
+            is asked for or the port has no RTS line, as a pty on Linux.
         """
     @rs485.setter
     def rs485(self, value: bool | RS485 | None) -> None: ...

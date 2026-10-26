@@ -203,8 +203,8 @@ impl PortCore {
             return Err(SerialError::AlreadyOpen);
         }
         // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): open order.
-        let opened = backend::open(&port, &settings, rts, dtr)?;
-        self.check_rs485(opened.as_ref(), &settings)?;
+        let mut opened = backend::open(&port, &settings, rts, dtr)?;
+        self.check_rs485(opened.as_mut(), &settings)?;
         opened.clear_buffers(true, false)?;
         *slot = Some(opened);
         Ok(())
@@ -295,7 +295,7 @@ impl PortCore {
                     lock(&self.state).settings = before;
                     return Err(err);
                 }
-                let checked = self.check_rs485(port.as_ref(), &settings);
+                let checked = self.check_rs485(port.as_mut(), &settings);
                 if checked.is_err() {
                     let (rts, dtr) = {
                         let mut state = lock(&self.state);
@@ -304,7 +304,7 @@ impl PortCore {
                     };
                     // The port took the rejected settings, so it gets the stored ones back.
                     port.configure(&before, rts, dtr)?;
-                    self.check_rs485(port.as_ref(), &before)?;
+                    self.check_rs485(port.as_mut(), &before)?;
                 }
                 checked
             }
@@ -312,17 +312,32 @@ impl PortCore {
         }
     }
 
-    /// Records whether the driver switches RTS for `settings.rs485`, and refuses loopback
-    /// where it does not, since only the driver controls the receiver.
-    fn check_rs485(&self, port: &dyn Backend, settings: &Settings) -> Result<(), SerialError> {
+    /// Records whether the driver switches RTS for `settings.rs485`. Where it does not, refuses
+    /// loopback, since only the driver controls the receiver, and a port without an RTS line.
+    fn check_rs485(&self, port: &mut dyn Backend, settings: &Settings) -> Result<(), SerialError> {
         let by_driver = settings.rs485.is_some() && port.rs485_by_driver(settings);
         lock(&self.state).rs485_by_driver = by_driver;
-        if settings.rs485.is_some_and(|r| r.loopback) && !by_driver {
+        let Some(rs485) = settings.rs485.filter(|_| !by_driver) else {
+            return Ok(());
+        };
+        if rs485.loopback {
             return Err(SerialError::Value(
                 "loopback needs a driver that switches RTS".into(),
             ));
         }
-        Ok(())
+        // configure() ignores a missing line, so writing the receive level again is the probe.
+        let probed = port.set_rts(rs485.rts_while_rx);
+        #[cfg(unix)]
+        if let Err(SerialError::Os {
+            code: Some(libc::ENOTTY | libc::EINVAL),
+            ..
+        }) = probed
+        {
+            return Err(SerialError::Value(
+                "rs485 needs a port with an RTS line".into(),
+            ));
+        }
+        probed
     }
 
     /// Who switches RTS for RS-485 on the open port, or `None` when it is off or closed.
