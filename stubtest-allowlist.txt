@@ -1,0 +1,5 @@
+# ListPortInfo defines only __lt__, as in pyserial, but CPython adds all six
+# comparison slots to a class that defines any of them. `>` works through the
+# reflected __lt__ and `<=` raises TypeError, so the stub declares neither.
+oxiserial.tools.list_ports.ListPortInfo.__gt__
+oxiserial.tools.list_ports.ListPortInfo.__le__

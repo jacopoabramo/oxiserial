@@ -49,7 +49,7 @@ uv run pytest
 uv run ruff check python tests benchmarks
 uv run ruff format --check python tests benchmarks
 uv run mypy
-uv run python -m mypy.stubtest oxiserial
+uv run python -m mypy.stubtest oxiserial --allowlist stubtest-allowlist.txt
 ```
 
 Run all of them before reporting a change as done. Real-port tests need a
