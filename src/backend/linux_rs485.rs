@@ -22,8 +22,11 @@ const SER_RS485_ENABLED: u32 = 1;
 const SER_RS485_RTS_ON_SEND: u32 = 1 << 1;
 const SER_RS485_RTS_AFTER_SEND: u32 = 1 << 2;
 const SER_RS485_RX_DURING_TX: u32 = 1 << 4;
+const ASKED_FLAGS: u32 =
+    SER_RS485_ENABLED | SER_RS485_RTS_ON_SEND | SER_RS485_RTS_AFTER_SEND | SER_RS485_RX_DURING_TX;
 
-nix::ioctl_write_ptr_bad!(tiocsrs485, libc::TIOCSRS485, SerialRs485);
+// The kernel writes back the configuration it applied.
+nix::ioctl_readwrite_bad!(tiocsrs485, libc::TIOCSRS485, SerialRs485);
 nix::ioctl_read_bad!(tiocgrs485, libc::TIOCGRS485, SerialRs485);
 
 /// The kernel's form of `r`, with the delays in whole milliseconds, rounded up.
@@ -42,14 +45,30 @@ fn to_kernel(r: &Rs485) -> SerialRs485 {
     }
 }
 
-/// Turns on the kernel's RS-485 mode; `false` when the driver has none.
+/// Whether the driver applied the flags and delays of `asked` unchanged; drivers drop
+/// flags and delays they do not support, and clamp long delays.
+fn applied_as_asked(asked: &SerialRs485, applied: &SerialRs485) -> bool {
+    applied.flags & ASKED_FLAGS == asked.flags
+        && applied.delay_rts_before_send == asked.delay_rts_before_send
+        && applied.delay_rts_after_send == asked.delay_rts_after_send
+}
+
+/// Turns on the kernel's RS-485 mode; `false`, with the mode off, when the driver has
+/// none or cannot apply `r` as given.
 pub fn enable(fd: RawFd, r: &Rs485) -> Result<bool, SerialError> {
+    let asked = to_kernel(r);
+    let mut applied = to_kernel(r);
     // SAFETY: `fd` is an open port, and the struct outlives the call.
-    match unsafe { tiocsrs485(fd, &to_kernel(r)) } {
-        Ok(_) => Ok(true),
-        Err(nix::errno::Errno::ENOTTY | nix::errno::Errno::EINVAL) => Ok(false),
-        Err(errno) => Err(std::io::Error::from(errno).into()),
+    let honoured = match unsafe { tiocsrs485(fd, &mut applied) } {
+        Ok(_) => applied_as_asked(&asked, &applied),
+        Err(nix::errno::Errno::ENOTTY | nix::errno::Errno::EINVAL) => false,
+        Err(errno) => return Err(std::io::Error::from(errno).into()),
+    };
+    // A refused request leaves an earlier configuration in place.
+    if !honoured {
+        disable(fd);
     }
+    Ok(honoured)
 }
 
 /// Whether the kernel's RS-485 mode is on for `fd`.
@@ -62,7 +81,7 @@ pub fn enabled(fd: RawFd) -> bool {
 /// Turns the kernel's RS-485 mode off, ignoring a driver that refuses.
 pub fn disable(fd: RawFd) {
     // SAFETY: as in `enable`.
-    let _ = unsafe { tiocsrs485(fd, &SerialRs485::default()) };
+    let _ = unsafe { tiocsrs485(fd, &mut SerialRs485::default()) };
 }
 
 #[cfg(test)]
@@ -86,5 +105,29 @@ mod tests {
             SER_RS485_ENABLED | SER_RS485_RTS_AFTER_SEND | SER_RS485_RX_DURING_TX
         );
         assert_eq!((k.delay_rts_before_send, k.delay_rts_after_send), (2, 0));
+    }
+
+    #[test]
+    fn a_driver_that_changes_the_request_did_not_apply_it() {
+        let asked = to_kernel(&Rs485 {
+            delay_after_tx: Duration::from_millis(200),
+            loopback: true,
+            ..Rs485::default()
+        });
+        let applied = |flags: u32, after: u32| SerialRs485 {
+            flags,
+            delay_rts_after_send: after,
+            padding: [7; 5],
+            ..SerialRs485::default()
+        };
+        assert!(applied_as_asked(
+            &asked,
+            &applied(asked.flags | 1 << 5, 200)
+        ));
+        assert!(!applied_as_asked(
+            &asked,
+            &applied(asked.flags & !SER_RS485_RX_DURING_TX, 200)
+        ));
+        assert!(!applied_as_asked(&asked, &applied(asked.flags, 100)));
     }
 }
