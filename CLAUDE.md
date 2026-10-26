@@ -18,7 +18,9 @@ that can be waited on (`.wait()`) or awaited.
 ## Rules
 
 - `pyserial` 3.5 is the specification for the public API: names, signatures,
-  defaults, exception types and behaviour.
+  defaults, exception types and behaviour, except for documented differences
+  that make usage simpler, each listed in the README's "Differences from
+  pyserial".
 - Code or text taken from pyserial gets a one-line comment saying so; the
   notice is in `LICENSES/pyserial.txt`.
 - OS access goes through crates (`serialport`, `tokio-serial`, and `nix` or

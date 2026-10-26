@@ -234,8 +234,9 @@ class SerialBase:
     def rs485(self) -> RS485 | None:
         """How RTS drives an RS-485 transceiver, or `None` when RS-485 is off.
 
-        Assigning `True` stands for `RS485()`, and `False` or `None` turns
-        RS-485 off.
+        Assigning `True` stands for `RS485()`, an `RS485` sets the RTS levels,
+        delays and loopback it holds, and `False` or `None` turns RS-485 off.
+        On an open port the change applies at once.
 
         Raises
         ------
@@ -251,6 +252,12 @@ class SerialBase:
     def rs485_switched_by(self) -> Literal["driver", "oxiserial"] | None:
         """Who switches RTS for RS-485 on the open port.
 
+        `"driver"` means the OS driver raises RTS while it sends. On Windows
+        oxiserial only asks the driver to, so the value is `"driver"` even
+        when the driver ignores the request. `"oxiserial"` means each write
+        raises RTS, waits until the OS buffer is empty and drops it again; the
+        UART may still be sending its last bytes then, so RTS can drop
+        slightly early.
         `None` when RS-485 is off or the port is closed.
         """
     @property

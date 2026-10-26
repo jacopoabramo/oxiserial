@@ -10,9 +10,11 @@
 
 # oxiserial
 
-Serial port access for Python, written in Rust. It has the API of
-[pyserial](https://pypi.org/project/pyserial/) 3.5, and adds an asyncio
-interface whose I/O calls return futures.
+Serial port access for Python, written in Rust. It is almost a drop-in
+replacement for [pyserial](https://pypi.org/project/pyserial/) 3.5, and adds
+an asyncio interface whose I/O calls return futures. The few places where
+it departs from pyserial are listed under
+[Differences from pyserial](#differences-from-pyserial).
 
 Runs on Windows, Linux and macOS with CPython 3.11 or newer, including the
 free-threaded build.
@@ -28,7 +30,8 @@ builds from source, which needs a Rust toolchain.
 
 ## Replace pyserial
 
-Change the import; the rest of the code stays as it is.
+Change the import. Code that uses none of the
+[differences](#differences-from-pyserial) runs as it is.
 
 ```python
 import oxiserial as serial
@@ -137,6 +140,25 @@ for port in sorted(comports()):
 `grep(regexp)`, from the same module, returns only the ports whose device,
 description or hwid matches `regexp`, ignoring case.
 
+## Drive an RS-485 bus
+
+An RS-485 transceiver sends only while RTS is raised, so a port that drives
+one has to raise RTS around each write. The `rs485` setting does that on
+`Serial` and `oxiserial.aio.Serial` alike:
+
+```python
+from oxiserial import RS485, Serial
+
+port = Serial("/dev/ttyS1", 115200, rs485=True)
+port = Serial("COM4", rs485=RS485(delay_after_tx=0.002))
+port.rs485_switched_by  # "driver" or "oxiserial"
+```
+
+`rs485_switched_by` tells whether the OS driver switches RTS or oxiserial
+does it around each write. When oxiserial does it, RTS drops once the OS
+buffer is empty, which can be slightly before the UART has sent its last
+bytes, so a device that needs RTS held to the end wants a `delay_after_tx`.
+
 ## Differences from pyserial
 
 - `write()` also accepts `str` and sends it as UTF-8.
@@ -151,8 +173,10 @@ description or hwid matches `regexp`, ignoring case.
 - `serial_for_url` accepts device names and `loop://`; other URLs, such as
   `socket://`, raise `ValueError`. `Serial("loop://")` also opens a
   loopback port.
-- `serial.rs485` is not available yet; `serial.threaded` is
-  `oxiserial.threaded`.
+- pyserial's `serial.rs485` module, with `RS485Settings`, the
+  `rs485_mode` property and the `RS485` subclass of `Serial`, is replaced
+  by the `rs485` setting; see [Drive an RS-485 bus](#drive-an-rs-485-bus).
+- `serial.threaded` is `oxiserial.threaded`.
 
 ## License
 
