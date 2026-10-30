@@ -94,7 +94,7 @@ class RS485:
     Raises
     ------
     ValueError
-        If a delay is negative, infinite or NaN.
+        If a delay is negative, NaN, or above about 1.8e19 seconds.
     """
 
     def __new__(
