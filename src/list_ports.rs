@@ -220,13 +220,25 @@ pub fn comports(py: Python<'_>, include_links: bool) -> PyResult<Vec<ListPortInf
             })
         })
         .map_err(SerialError::from)?;
-    Ok(ports
+    let mut listed: Vec<ListPortInfo> = ports
         .into_iter()
         .map(|info| {
             let found = details.remove(&info.port_name);
             ListPortInfo::from_info(info, found)
         })
-        .collect())
+        .collect();
+    // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): Windows lists a port whose
+    // device has a problem, which serialport leaves out, so the OS details add it back.
+    // shortcut: such a port keeps Device Manager's raw instance id as hwid even when it is USB;
+    // parse VID and PID from it if a user needs them.
+    listed.extend(details.into_iter().map(|(port_name, found)| {
+        let info = SerialPortInfo {
+            port_name,
+            port_type: SerialPortType::Unknown,
+        };
+        ListPortInfo::from_info(info, Some(found))
+    }));
+    Ok(listed)
 }
 
 /// The ports from `comports` whose device, description or hwid matches `regexp`, ignoring case.

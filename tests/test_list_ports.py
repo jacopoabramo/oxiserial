@@ -47,6 +47,13 @@ def test_comports_matches_pyserial_for_ports_that_are_not_usb() -> None:
     assert found == {device: expected[device] for device in found}
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Device Manager is Windows only")
+def test_comports_lists_every_port_pyserial_lists() -> None:
+    """List each port pyserial lists, including ones whose device has a problem."""
+    expected = {port.device for port in pyserial_list_ports.comports()}
+    assert expected <= {port.device for port in comports()}
+
+
 def test_list_ports_common_provides_the_same_class() -> None:
     """Import ListPortInfo from list_ports_common as the class comports returns."""
     assert list_ports_common.ListPortInfo("COM1") == ListPortInfo("COM1")
