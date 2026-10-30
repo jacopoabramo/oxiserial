@@ -13,7 +13,12 @@ pub struct PyRs485(pub Rs485);
 
 fn delay(field: &str, seconds: f64) -> PyResult<Duration> {
     Duration::try_from_secs_f64(seconds).map_err(|_| {
-        PyValueError::new_err(format!("{field} must be a non-negative number of seconds"))
+        // The error does not say which bound failed, so the value tells.
+        if seconds.is_nan() || seconds < 0.0 {
+            PyValueError::new_err(format!("{field} must be a non-negative number of seconds"))
+        } else {
+            PyValueError::new_err(format!("{field} is too large"))
+        }
     })
 }
 

@@ -45,12 +45,20 @@ def test_rs485_takes_keywords_only() -> None:
         RS485(True)  # type: ignore[call-arg]
 
 
-@pytest.mark.parametrize("delay", [-0.001, math.inf, math.nan])
+@pytest.mark.parametrize(
+    ("delay", "problem"),
+    [
+        (-0.001, "must be a non-negative"),
+        (math.nan, "must be a non-negative"),
+        (math.inf, "is too large"),
+        (1e300, "is too large"),
+    ],
+)
 @pytest.mark.parametrize("field", ["delay_before_tx", "delay_after_tx"])
-def test_rs485_rejects_bad_delays(field: str, delay: float) -> None:
-    """Raise ValueError naming the field for a negative, infinite or NaN delay."""
+def test_rs485_rejects_bad_delays(field: str, delay: float, problem: str) -> None:
+    """Raise ValueError naming the field and the problem for a delay out of range."""
     kwargs: dict[str, Any] = {field: delay}
-    with pytest.raises(ValueError, match=field):
+    with pytest.raises(ValueError, match=f"{field} {problem}"):
         RS485(**kwargs)
 
 
