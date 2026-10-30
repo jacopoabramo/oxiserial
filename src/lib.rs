@@ -3,6 +3,8 @@ mod backend;
 mod errors;
 mod future;
 mod list_ports;
+#[cfg(windows)]
+mod list_ports_windows;
 mod port;
 mod rs485;
 mod runtime;

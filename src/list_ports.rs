@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 
@@ -68,8 +69,15 @@ fn natural_key(text: &str) -> Vec<Vec<u128>> {
     key
 }
 
+/// What the OS reports about a port that is not USB, in pyserial's fields.
+pub struct PortDetails {
+    pub description: Option<String>,
+    pub hwid: String,
+    pub manufacturer: Option<String>,
+}
+
 impl ListPortInfo {
-    fn from_info(info: SerialPortInfo) -> Self {
+    fn from_info(info: SerialPortInfo, details: Option<PortDetails>) -> Self {
         let mut port = Self::new(info.port_name, false);
         if let SerialPortType::UsbPort(usb) = info.port_type {
             port.vid = Some(usb.vid);
@@ -79,6 +87,12 @@ impl ListPortInfo {
             port.product = usb.product;
             port.location = usb.location.as_ref().map(format_location);
             port.apply_usb_info();
+        } else if let Some(details) = details {
+            if let Some(description) = details.description {
+                port.description = description;
+            }
+            port.hwid = details.hwid;
+            port.manufacturer = details.manufacturer;
         }
         port
     }
@@ -194,17 +208,25 @@ impl ListPortInfo {
 #[pyo3(signature = (include_links = false))]
 pub fn comports(py: Python<'_>, include_links: bool) -> PyResult<Vec<ListPortInfo>> {
     let _ = include_links;
-    let ports = py
+    let (ports, mut details) = py
         .detach(|| {
             serialport::available_ports().map(|ports| {
-                ports
+                let ports: Vec<_> = ports
                     .into_iter()
                     .filter(|port| !has_no_uart(&port.port_name))
-                    .collect::<Vec<_>>()
+                    .collect();
+                let details = port_details(&ports);
+                (ports, details)
             })
         })
         .map_err(SerialError::from)?;
-    Ok(ports.into_iter().map(ListPortInfo::from_info).collect())
+    Ok(ports
+        .into_iter()
+        .map(|info| {
+            let found = details.remove(&info.port_name);
+            ListPortInfo::from_info(info, found)
+        })
+        .collect())
 }
 
 /// The ports from `comports` whose device, description or hwid matches `regexp`, ignoring case.
@@ -247,6 +269,50 @@ fn has_no_uart(device: &str) -> bool {
 #[cfg(not(target_os = "linux"))]
 fn has_no_uart(_device: &str) -> bool {
     false
+}
+
+#[cfg(windows)]
+fn port_details(_ports: &[SerialPortInfo]) -> HashMap<String, PortDetails> {
+    crate::list_ports_windows::port_details()
+}
+
+/// The name and sysfs id of each ACPI (`pnp`) or AMBA port, by device.
+#[cfg(target_os = "linux")]
+fn port_details(ports: &[SerialPortInfo]) -> HashMap<String, PortDetails> {
+    ports
+        .iter()
+        .filter_map(|port| {
+            let name = port.port_name.strip_prefix("/dev/")?;
+            Some((port.port_name.clone(), sysfs_details(name)?))
+        })
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn sysfs_details(name: &str) -> Option<PortDetails> {
+    // Matches pyserial (BSD-3-Clause, see LICENSES/pyserial.txt): pnp and amba ports.
+    let device = std::fs::canonicalize(format!("/sys/class/tty/{name}/device")).ok()?;
+    let subsystem = std::fs::canonicalize(device.join("subsystem")).ok()?;
+    let hwid = match subsystem.file_name()?.to_str()? {
+        "pnp" => std::fs::read_to_string(device.join("id"))
+            .ok()?
+            .lines()
+            .next()?
+            .trim()
+            .to_owned(),
+        "amba" => device.file_name()?.to_string_lossy().into_owned(),
+        _ => return None,
+    };
+    Some(PortDetails {
+        description: Some(name.to_owned()),
+        hwid,
+        manufacturer: None,
+    })
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn port_details(_ports: &[SerialPortInfo]) -> HashMap<String, PortDetails> {
+    HashMap::new()
 }
 
 #[cfg(test)]
