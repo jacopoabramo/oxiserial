@@ -3,6 +3,7 @@ import re
 import sys
 
 import pytest
+from serial.tools import list_ports as pyserial_list_ports
 
 from oxiserial.tools import list_ports_common
 from oxiserial.tools.list_ports import ListPortInfo, comports, grep
@@ -29,6 +30,21 @@ def test_usb_info_matches_pyserial_format() -> None:
 def test_comports_returns_port_info() -> None:
     """Return only ListPortInfo objects from comports."""
     assert all(isinstance(port, ListPortInfo) for port in comports())
+
+
+def test_comports_matches_pyserial_for_ports_that_are_not_usb() -> None:
+    """Report pyserial's description, hwid and manufacturer for non-USB ports."""
+    expected = {
+        port.device: (port.description, port.hwid, port.manufacturer)
+        for port in pyserial_list_ports.comports()
+        if port.vid is None
+    }
+    found = {
+        port.device: (port.description, port.hwid, port.manufacturer)
+        for port in comports()
+        if port.device in expected
+    }
+    assert found == {device: expected[device] for device in found}
 
 
 def test_list_ports_common_provides_the_same_class() -> None:
